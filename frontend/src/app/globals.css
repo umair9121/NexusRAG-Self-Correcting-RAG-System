@@ -1,0 +1,116 @@
+@import "tailwindcss";
+
+/* Dark theme (default) */
+:root,
+[data-theme="dark"] {
+  --bg-primary: #0a0a0f;
+  --bg-secondary: #111118;
+  --bg-tertiary: #1a1a24;
+  --border: #2a2a3a;
+  --text-primary: #e4e4ed;
+  --text-secondary: #8b8ba0;
+  --accent: #6366f1;
+  --accent-hover: #818cf8;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --error: #ef4444;
+  --info: #3b82f6;
+  --btn-warning-bg: rgba(245, 158, 11, 0.25);
+  --btn-warning-border: rgba(245, 158, 11, 0.5);
+  --btn-warning-text: #fcd34d;
+  --btn-warning-hover-bg: rgba(245, 158, 11, 0.35);
+  --btn-warning-solid-bg: #d97706;
+  --btn-warning-solid-hover: #b45309;
+  --ingestion-banner-bg: rgba(245, 158, 11, 0.1);
+  --ingestion-banner-border: rgba(245, 158, 11, 0.4);
+  --ingestion-banner-text: #fcd34d;
+  --ingestion-banner-accent: #f59e0b;
+  --ingestion-banner-btn-hover: rgba(245, 158, 11, 0.2);
+  /* Warning/alert banner (e.g. Backend not available) */
+  --alert-warning-bg: rgba(245, 158, 11, 0.15);
+  --alert-warning-border: rgba(245, 158, 11, 0.4);
+  --alert-warning-text: #fcd34d;
+  --alert-warning-text-muted: rgba(252, 211, 77, 0.9);
+  --alert-warning-text-subtle: rgba(252, 211, 77, 0.7);
+  --alert-warning-btn-bg: rgba(245, 158, 11, 0.3);
+  --alert-warning-btn-hover: rgba(245, 158, 11, 0.5);
+  --alert-warning-code-bg: rgba(0, 0, 0, 0.3);
+}
+
+/* Light theme */
+[data-theme="light"] {
+  --bg-primary: #f4f4f8;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #e8e8f0;
+  --border: #d4d4e0;
+  --text-primary: #1a1a24;
+  --text-secondary: #5c5c70;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --success: #16a34a;
+  --warning: #d97706;
+  --error: #dc2626;
+  --info: #2563eb;
+  --btn-warning-bg: rgba(180, 83, 9, 0.12);
+  --btn-warning-border: #b45309;
+  --btn-warning-text: #92400e;
+  --btn-warning-hover-bg: rgba(180, 83, 9, 0.2);
+  --btn-warning-solid-bg: #b45309;
+  --btn-warning-solid-hover: #92400e;
+  --ingestion-banner-bg: rgba(180, 83, 9, 0.1);
+  --ingestion-banner-border: #b45309;
+  --ingestion-banner-text: #92400e;
+  --ingestion-banner-accent: #b45309;
+  --ingestion-banner-btn-hover: rgba(180, 83, 9, 0.18);
+  /* Warning/alert banner: darker shades for contrast on light background */
+  --alert-warning-bg: rgba(180, 83, 9, 0.12);
+  --alert-warning-border: #b45309;
+  --alert-warning-text: #78350f;
+  --alert-warning-text-muted: #92400e;
+  --alert-warning-text-subtle: #a16207;
+  --alert-warning-btn-bg: rgba(180, 83, 9, 0.2);
+  --alert-warning-btn-hover: rgba(180, 83, 9, 0.35);
+  --alert-warning-code-bg: rgba(0, 0, 0, 0.06);
+}
+
+/* Light mode: darker yellow/amber for text so it’s readable on light backgrounds */
+[data-theme="light"] .text-yellow-400,
+[data-theme="light"] .text-yellow-500 {
+  color: #92400e;
+}
+[data-theme="light"] .text-amber-400,
+[data-theme="light"] .text-amber-500 {
+  color: #b45309;
+}
+[data-theme="light"] .text-amber-600 {
+  color: #78350f;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+/* Warning/alert banner: uses theme-aware vars so yellow is darker in light mode */
+.alert-warning-banner {
+  background: var(--alert-warning-bg);
+  border: 1px solid var(--alert-warning-border);
+  color: var(--alert-warning-text);
+}
+.alert-warning-banner .alert-warning-muted { color: var(--alert-warning-text-muted); }
+.alert-warning-banner .alert-warning-subtle { color: var(--alert-warning-text-subtle); }
+.alert-warning-banner .alert-warning-code { background: var(--alert-warning-code-bg); }
+.alert-warning-banner .alert-warning-btn {
+  background: var(--alert-warning-btn-bg);
+}
+.alert-warning-banner .alert-warning-btn:hover {
+  background: var(--alert-warning-btn-hover);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-secondary); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: #3a3a4a; }
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: #b4b4c8; }

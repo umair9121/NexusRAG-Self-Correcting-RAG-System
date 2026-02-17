@@ -1,0 +1,13 @@
+{
+  "xmx_accel": false,
+  "intel_gpu_openvino": false,
+  "level_zero": false,
+  "openvino_cpu": true,
+  "ipex_optimize": true,
+  "onednn_verbose": true,
+  "tensorrt_optimize": true,
+  "nvidia_mps": true,
+  "cudnn_benchmark": true,
+  "tensor_cores": true,
+  "cuda_graphs": true
+}

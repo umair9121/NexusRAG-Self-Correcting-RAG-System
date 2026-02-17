@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+venv/
+.venv/
+
+# Node
+node_modules/
+.next/
+out/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Storage (generated data)
+storage/chroma/*
+!storage/chroma/.gitkeep
+storage/pageindex/*
+!storage/pageindex/.gitkeep
+storage/graph_data/*
+!storage/graph_data/.gitkeep
+storage/docstore.json
+storage/rag_system.db
+
+# Uploaded data
+data/*
+!data/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+*.log
