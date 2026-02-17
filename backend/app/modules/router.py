@@ -1,5 +1,6 @@
 """
 The Orchestrator: Adaptive RAG with LangGraph
+Focused on Graph RAG + CAG routing (PageIndex and Vector removed).
 """
 
 from __future__ import annotations
@@ -12,8 +13,6 @@ from langgraph.graph import StateGraph, END
 
 from app import config
 from app.modules.ollama_client import OllamaClient
-from app.modules.pageindex import TreeSearcher
-from app.modules.contextual import HybridSearcher
 from app.modules.graph import GraphSearcher
 from app.modules.cag import CAGManager
 
@@ -23,13 +22,11 @@ StateDict = dict[str, Any]
 
 
 class AdaptiveRAG:
-    VALID_ROUTES = {"PAGEINDEX", "VECTOR", "GRAPH", "CAG"}
-    FALLBACK_ORDER = ["VECTOR", "PAGEINDEX", "GRAPH"]
+    VALID_ROUTES = {"GRAPH", "CAG"}
+    FALLBACK_ORDER = ["GRAPH"]
 
     def __init__(self, llm: OllamaClient | None = None, cag_manager: CAGManager | None = None):
         self.llm = llm or OllamaClient()
-        self.tree_searcher = TreeSearcher(self.llm)
-        self.hybrid_searcher = HybridSearcher(self.llm)
         self.graph_searcher = GraphSearcher(self.llm)
         self.cag_manager = cag_manager or CAGManager(self.llm)
         self._graph = self._build_graph()
@@ -37,17 +34,14 @@ class AdaptiveRAG:
     def _build_graph(self):
         wf = StateGraph(state_schema=dict)
         wf.add_node("router", self._router_node)
-        wf.add_node("pageindex_retriever", self._pageindex_node)
-        wf.add_node("vector_retriever", self._vector_node)
         wf.add_node("graph_retriever", self._graph_node)
         wf.add_node("cag_retriever", self._cag_node)
         wf.add_node("grader", self._grader_node)
         wf.add_node("rewriter", self._rewriter_node)
         wf.add_node("generator", self._generator_node)
         wf.set_entry_point("router")
-        wf.add_conditional_edges("router", self._route_decision, {"PAGEINDEX": "pageindex_retriever", "VECTOR": "vector_retriever", "GRAPH": "graph_retriever", "CAG": "cag_retriever"})
-        for r in ["pageindex_retriever", "vector_retriever", "graph_retriever"]:
-            wf.add_edge(r, "grader")
+        wf.add_conditional_edges("router", self._route_decision, {"GRAPH": "graph_retriever", "CAG": "cag_retriever"})
+        wf.add_edge("graph_retriever", "grader")
         wf.add_edge("cag_retriever", "generator")
         wf.add_conditional_edges("grader", self._grade_decision, {"relevant": "generator", "rewrite": "rewriter", "fail": "generator"})
         wf.add_edge("rewriter", "router")
@@ -61,43 +55,19 @@ class AdaptiveRAG:
         model = state.get("model")
         prompt = (
             "Analyze the user query and classify it into exactly one category.\n\n"
-            "Categories:\n- VECTOR: specific numbers, facts, definitions\n"
-            "- PAGEINDEX: compare sections, document structure\n"
-            "- GRAPH: high-level themes, relationships, trends\n"
-            f"- CAG: {'follow-up to previous context' if cag_active else 'DISABLED'}\n\n"
-            f"User query: \"{query}\"\n\nReturn JSON: {{\"route\": \"VECTOR\"}}"
+            "Categories:\n"
+            "- GRAPH: questions about entities, relationships, themes, trends, or any factual query\n"
+            f"- CAG: {'follow-up to previous context or conversational query' if cag_active else 'DISABLED'}\n\n"
+            f"User query: \"{query}\"\n\nReturn JSON: {{\"route\": \"GRAPH\"}}"
         )
         result = self.llm.generate_json(prompt, model=model, options=config.REASONING_OPTIONS)
-        route = result.get("route", "VECTOR").upper().strip()
+        route = result.get("route", "GRAPH").upper().strip()
         if route not in self.VALID_ROUTES:
-            route = "VECTOR"
+            route = "GRAPH"
         if route == "CAG" and not cag_active:
-            route = "VECTOR"
+            route = "GRAPH"
         trace.append(f"Router: classified as {route}")
         return {**state, "route": route, "trace": trace}
-
-    def _pageindex_node(self, state: StateDict) -> StateDict:
-        query, trace = state.get("query", ""), state.get("trace", [])
-        trace.append("PageIndex: starting tree traversal...")
-        result = self.tree_searcher.search(query)
-        for s in result.get("path", []):
-            trace.append(f"  PageIndex: {s}")
-        trace.append(f"PageIndex: found {len(result.get('leaf_nodes', []))} relevant sections")
-        meta = state.get("metadata", {})
-        meta["pageindex_path"] = result.get("path", [])
-        meta["pageindex_leaves"] = result.get("leaf_nodes", [])
-        return {**state, "context": result.get("context", ""), "trace": trace, "metadata": meta}
-
-    def _vector_node(self, state: StateDict) -> StateDict:
-        query, trace = state.get("query", ""), state.get("trace", [])
-        trace.append("Vector: running hybrid search...")
-        result = self.hybrid_searcher.search(query)
-        fused = result.get("results", [])
-        ctx = "\n\n---\n\n".join(r["text"] for r in fused if r["text"])
-        trace.append(f"Vector: found {len(fused)} results")
-        meta = state.get("metadata", {})
-        meta["vector_results_count"] = len(fused)
-        return {**state, "context": ctx, "trace": trace, "metadata": meta}
 
     def _graph_node(self, state: StateDict) -> StateDict:
         query, trace = state.get("query", ""), state.get("trace", [])
@@ -135,14 +105,13 @@ class AdaptiveRAG:
         query = state.get("query", "")
         original = state.get("original_query", query)
         retries = state.get("retries", 0)
-        route = state.get("route", "VECTOR")
+        route = state.get("route", "GRAPH")
         trace = state.get("trace", [])
         model = state.get("model")
         prompt = f"Rewrite this query to be more specific.\n\nOriginal: {original}\nFailed: {query}\n\nReturn JSON: {{\"rewritten_query\": \"...\"}}"
         result = self.llm.generate_json(prompt, model=model, options=config.REASONING_OPTIONS)
         rewritten = result.get("rewritten_query", query)
-        alts = [r for r in self.FALLBACK_ORDER if r != route]
-        new_route = alts[retries % len(alts)] if alts else "VECTOR"
+        new_route = "GRAPH"
         trace.append(f"Rewriter: '{query}' -> '{rewritten}' (trying {new_route})")
         return {**state, "query": rewritten, "route": new_route, "retries": retries + 1, "trace": trace}
 
@@ -164,7 +133,7 @@ class AdaptiveRAG:
 
     @staticmethod
     def _route_decision(state: StateDict) -> str:
-        return state.get("route", "VECTOR")
+        return state.get("route", "GRAPH")
 
     @staticmethod
     def _grade_decision(state: StateDict) -> str:

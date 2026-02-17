@@ -31,10 +31,10 @@ router = APIRouter(prefix="/api/ingestion", tags=["ingestion"])
 def _pipelines_to_run_for_doc(doc, requested: list[str]) -> list[str]:
     """Return which pipelines to run when only_failed=True: those in requested that are error or pending."""
     run = []
-    if "pageindex" in requested and doc.pageindex_status in ("error", "pending"):
-        run.append("pageindex")
-    if "contextual" in requested and doc.contextual_status in ("error", "pending"):
-        run.append("contextual")
+    if "extraction" in requested and doc.extraction_status in ("error", "pending"):
+        run.append("extraction")
+    if "edi_evaluation" in requested and doc.edi_status in ("error", "pending"):
+        run.append("edi_evaluation")
     if "graph" in requested and doc.graph_status in ("error", "pending"):
         run.append("graph")
     return run
@@ -42,11 +42,25 @@ def _pipelines_to_run_for_doc(doc, requested: list[str]) -> list[str]:
 
 def _cleanup_pipeline_data(doc_stem: str, pipeline: str) -> None:
     """Remove stored artefacts for a single pipeline so it can be re-run cleanly."""
-    if pipeline == "pageindex":
-        pi_path = config.PAGEINDEX_DIR / f"{doc_stem}.json"
-        if pi_path.exists():
-            pi_path.unlink()
-            logger.info("Cleaned up PageIndex data for %s", doc_stem)
+    if pipeline == "extraction":
+        ext_path = config.EXTRACTION_DIR / f"{doc_stem}.json"
+        if ext_path.exists():
+            # Preserve edi_evaluation data if present
+            try:
+                import json as _json
+                with open(ext_path, "r", encoding="utf-8") as f:
+                    data = _json.load(f)
+                edi = data.get("edi_evaluation")
+                if edi:
+                    with open(ext_path, "w", encoding="utf-8") as f:
+                        _json.dump({"edi_evaluation": edi}, f, indent=2, ensure_ascii=False)
+                    logger.info("Cleaned up extraction data for %s (preserved EDI)", doc_stem)
+                else:
+                    ext_path.unlink()
+                    logger.info("Cleaned up extraction data for %s", doc_stem)
+            except Exception:
+                ext_path.unlink()
+                logger.info("Cleaned up extraction data for %s", doc_stem)
         # Also clean up extracted figures
         try:
             import shutil
@@ -57,23 +71,26 @@ def _cleanup_pipeline_data(doc_stem: str, pipeline: str) -> None:
         except Exception as exc:
             logger.warning("Figures cleanup for %s failed: %s", doc_stem, exc)
 
+    elif pipeline == "edi_evaluation":
+        ext_path = config.EXTRACTION_DIR / f"{doc_stem}.json"
+        if ext_path.exists():
+            try:
+                import json as _json
+                with open(ext_path, "r", encoding="utf-8") as f:
+                    data = _json.load(f)
+                data.pop("edi_evaluation", None)
+                with open(ext_path, "w", encoding="utf-8") as f:
+                    _json.dump(data, f, indent=2, ensure_ascii=False)
+                logger.info("Cleaned up EDI evaluation data for %s", doc_stem)
+            except Exception as exc:
+                logger.warning("EDI cleanup for %s failed: %s", doc_stem, exc)
+
     elif pipeline == "graph":
         for suffix in ["_graph.json", "_communities.json"]:
             gp = config.GRAPH_DIR / f"{doc_stem}{suffix}"
             if gp.exists():
                 gp.unlink()
         logger.info("Cleaned up Graph data for %s", doc_stem)
-
-    elif pipeline == "contextual":
-        # Contextual retriever already cleans up on re-ingest (ingest_text deletes
-        # existing chunks), but we do it proactively here for clarity.
-        try:
-            from app.modules.contextual import DocStore, _delete_chroma_by_doc_name
-            _delete_chroma_by_doc_name(doc_stem)
-            DocStore().delete_by_doc_name(doc_stem)
-            logger.info("Cleaned up Contextual data for %s", doc_stem)
-        except Exception as exc:
-            logger.warning("Contextual cleanup for %s failed: %s", doc_stem, exc)
 
 
 # ── Standard routes ──────────────────────────────────────────────────────────
@@ -86,7 +103,7 @@ async def start_ingestion(
 ):
     """Start ingestion for one or more documents. If only_failed=True, run only pipelines that are error or pending for each doc."""
     queued = []
-    requested = req.pipelines or ["pageindex", "contextual", "graph"]
+    requested = req.pipelines or ["extraction", "edi_evaluation", "graph"]
     for doc_id in req.document_ids:
         doc = await get_document(db, doc_id)
         if not doc:
@@ -119,15 +136,15 @@ async def cancel_ingestion(doc_id: int, db: AsyncSession = Depends(get_db)):
         if doc:
             doc_stem = Path(doc.file_path).stem
             # Clean up any pipeline data that was created during partial ingestion
-            for pipeline in ["pageindex", "contextual", "graph"]:
+            for pipeline in ["extraction", "edi_evaluation", "graph"]:
                 _cleanup_pipeline_data(doc_stem, pipeline)
             # Reset all pipeline statuses to pending
-            doc.pageindex_status = "pending"
-            doc.contextual_status = "pending"
+            doc.extraction_status = "pending"
+            doc.edi_status = "pending"
             doc.graph_status = "pending"
-            doc.chunk_count = 0
             doc.node_count = 0
             doc.edge_count = 0
+            doc.edi_rating = ""
             doc.status = "uploaded"
             doc.error_message = ""
             await db.commit()
@@ -144,15 +161,15 @@ async def cancel_all_ingestion(db: AsyncSession = Depends(get_db)):
         if doc:
             doc_stem = Path(doc.file_path).stem
             # Clean up any pipeline data that was created during partial ingestion
-            for pipeline in ["pageindex", "contextual", "graph"]:
+            for pipeline in ["extraction", "edi_evaluation", "graph"]:
                 _cleanup_pipeline_data(doc_stem, pipeline)
             # Reset all pipeline statuses to pending
-            doc.pageindex_status = "pending"
-            doc.contextual_status = "pending"
+            doc.extraction_status = "pending"
+            doc.edi_status = "pending"
             doc.graph_status = "pending"
-            doc.chunk_count = 0
             doc.node_count = 0
             doc.edge_count = 0
+            doc.edi_rating = ""
             doc.status = "uploaded"
             doc.error_message = ""
             cleaned_docs.append({"document_id": doc.id, "filename": doc.filename})
@@ -254,10 +271,10 @@ async def resume_ingestion(
 
         # Reset DB per-pipeline statuses for the pipelines we're about to re-run
         for p in remaining:
-            if p == "pageindex":
-                doc.pageindex_status = "pending"
-            elif p == "contextual":
-                doc.contextual_status = "pending"
+            if p == "extraction":
+                doc.extraction_status = "pending"
+            elif p == "edi_evaluation":
+                doc.edi_status = "pending"
             elif p == "graph":
                 doc.graph_status = "pending"
         doc.status = "uploaded"

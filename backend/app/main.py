@@ -52,11 +52,11 @@ async def lifespan(app: FastAPI):
                 existing = ingestion_state.get_all()
                 if str(doc.id) not in existing:
                     # Determine which pipelines were originally requested (assume all 3)
-                    all_pipelines = ["pageindex", "contextual", "graph"]
+                    all_pipelines = ["extraction", "edi_evaluation", "graph"]
                     completed = []
                     for p, col in [
-                        ("pageindex", doc.pageindex_status),
-                        ("contextual", doc.contextual_status),
+                        ("extraction", doc.extraction_status),
+                        ("edi_evaluation", doc.edi_status),
                         ("graph", doc.graph_status),
                     ]:
                         if col == "done":
@@ -92,9 +92,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Hybrid RAGSystem",
-    description="Adaptive RAG backend with PageIndex, Vector, Graph, and CAG retrieval",
-    version="1.0.0",
+    title="GraphRAG System",
+    description="Adaptive RAG backend with Graph RAG, Image Extraction, EDI Evaluation, and CAG",
+    version="2.0.0",
     lifespan=lifespan,
 )
 

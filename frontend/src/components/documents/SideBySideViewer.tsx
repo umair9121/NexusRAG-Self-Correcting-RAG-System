@@ -9,7 +9,6 @@ import {
   ChevronRight,
   Loader2,
   AlertCircle,
-  Database,
   GitBranch,
   Network,
   FileText,
@@ -17,7 +16,7 @@ import {
   ExternalLink,
   GripVertical,
   Columns,
-  Layers,
+  Shield,
 } from "lucide-react";
 import { getDocumentMetadata, getDocumentPdfUrl } from "@/lib/api";
 
@@ -42,9 +41,8 @@ const TAB_CONFIG: {
   icon: React.ReactNode;
   description: string;
 }[] = [
-  { key: "pageindex", label: "Page Index", icon: <FileText size={14} />, description: "Hierarchical section tree with summaries" },
-  { key: "docstore", label: "Doc Store", icon: <Database size={14} />, description: "Text chunks with contextual metadata" },
-  { key: "chroma", label: "Vector Embeddings", icon: <Layers size={14} />, description: "ChromaDB vectors for this document" },
+  { key: "extraction", label: "Image Extraction", icon: <FileText size={14} />, description: "VLM-generated image description and metadata" },
+  { key: "edi_evaluation", label: "EDI Evaluation", icon: <Shield size={14} />, description: "EDI compliance assessment results" },
   { key: "graph", label: "Knowledge Graph", icon: <GitBranch size={14} />, description: "Entity-relationship graph structure" },
   { key: "communities", label: "Communities", icon: <Network size={14} />, description: "Graph community partitions and summaries" },
 ];

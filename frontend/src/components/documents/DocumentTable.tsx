@@ -39,10 +39,10 @@ const PIPELINE_COLORS: Record<string, string> = {
 
 function hasFailedOrPending(doc: Document): boolean {
   return (
-    doc.pageindex_status === "error" ||
-    doc.pageindex_status === "pending" ||
-    doc.contextual_status === "error" ||
-    doc.contextual_status === "pending" ||
+    doc.extraction_status === "error" ||
+    doc.extraction_status === "pending" ||
+    doc.edi_status === "error" ||
+    doc.edi_status === "pending" ||
     doc.graph_status === "error" ||
     doc.graph_status === "pending"
   );
@@ -141,20 +141,20 @@ export default function DocumentTable({
   };
 
   const handleRetryFailed = async (docId: number) => {
-    await startIngestion([docId], ["pageindex", "contextual", "graph"], { onlyFailed: true });
+    await startIngestion([docId], ["extraction", "edi_evaluation", "graph"], { onlyFailed: true });
     setShowLogsHint(true);
     onRefresh();
   };
 
   const handleBulkIngest = async () => {
-    await startIngestion(Array.from(selected), ["pageindex", "contextual", "graph"]);
+    await startIngestion(Array.from(selected), ["extraction", "edi_evaluation", "graph"]);
     setSelected(new Set());
     setShowLogsHint(true);
     onRefresh();
   };
 
   const handleBulkRetryFailed = async () => {
-    await startIngestion(Array.from(selected), ["pageindex", "contextual", "graph"], { onlyFailed: true });
+    await startIngestion(Array.from(selected), ["extraction", "edi_evaluation", "graph"], { onlyFailed: true });
     setSelected(new Set());
     setShowLogsHint(true);
     onRefresh();
@@ -268,7 +268,7 @@ export default function DocumentTable({
               <th className="px-3 py-2.5 text-left w-16">Pages</th>
               <th className="px-3 py-2.5 text-left w-24">Status</th>
               <th className="px-3 py-2.5 text-left w-32">Pipelines</th>
-              <th className="px-3 py-2.5 text-left w-20">Chunks</th>
+              <th className="px-3 py-2.5 text-left w-20">EDI</th>
               <th className="px-3 py-2.5 text-left w-28">Tags</th>
               <th className="px-3 py-2.5 text-left w-24">Actions</th>
             </tr>
@@ -294,12 +294,12 @@ export default function DocumentTable({
                 </td>
                 <td className="px-3 py-2.5">
                   <div className="flex gap-1.5 text-xs">
-                    <span className={PIPELINE_COLORS[doc.pageindex_status]} title={`PageIndex: ${doc.pageindex_status}`}>PI</span>
-                    <span className={PIPELINE_COLORS[doc.contextual_status]} title={`Vector Embeddings Contextual Process: ${doc.contextual_status}`}>VE</span>
+                    <span className={PIPELINE_COLORS[doc.extraction_status]} title={`Extraction: ${doc.extraction_status}`}>EX</span>
+                    <span className={PIPELINE_COLORS[doc.edi_status]} title={`EDI: ${doc.edi_status}${doc.edi_rating ? ` (${doc.edi_rating})` : ""}`}>EDI</span>
                     <span className={PIPELINE_COLORS[doc.graph_status]} title={`Graph: ${doc.graph_status}`}>GR</span>
                   </div>
                 </td>
-                <td className="px-3 py-2.5 text-[var(--text-secondary)]">{doc.chunk_count || "-"}</td>
+                <td className="px-3 py-2.5 text-[var(--text-secondary)]">{doc.edi_rating || "-"}</td>
                 <td className="px-3 py-2.5">
                   <div className="flex flex-wrap gap-1">
                     {doc.tags.slice(0, 2).map((t) => (
@@ -331,7 +331,7 @@ export default function DocumentTable({
                       <Braces size={14} className="text-[var(--accent)]" />
                     </button>
                     <button
-                      onClick={() => handleIngest(doc.id, ["pageindex", "contextual", "graph"])}
+                      onClick={() => handleIngest(doc.id, ["extraction", "edi_evaluation", "graph"])}
                       disabled={doc.status === "ingesting"}
                       className="p-1 rounded hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed"
                       title={doc.status === "ingesting" ? "Ingestion in progress" : "Run all pipelines"}
@@ -343,7 +343,7 @@ export default function DocumentTable({
                         onClick={() => handleRetryFailed(doc.id)}
                         disabled={doc.status === "ingesting"}
                         className="p-1 rounded hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed"
-                        title="Re-run only failed or pending pipelines (PI, VE, GR)"
+                        title="Re-run only failed or pending pipelines (EX, EDI, GR)"
                       >
                         <RotateCcw size={14} className="text-amber-400" />
                       </button>

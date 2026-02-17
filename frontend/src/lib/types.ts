@@ -8,12 +8,12 @@ export interface Document {
   notes: string;
   created_at: string;
   updated_at: string;
-  pageindex_status: string;
-  contextual_status: string;
+  extraction_status: string;
+  edi_status: string;
   graph_status: string;
-  chunk_count: number;
   node_count: number;
   edge_count: number;
+  edi_rating: string;
   error_message: string;
 }
 
@@ -63,7 +63,6 @@ export interface SystemHealth {
   total_documents: number;
   documents_ready: number;
   documents_ingesting: number;
-  pageindex_trees: string[];
   knowledge_graphs: string[];
   cag_status: Record<string, unknown>;
 }

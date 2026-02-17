@@ -30,13 +30,13 @@ class Document(Base):
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
     # Per-pipeline ingestion status
-    pageindex_status = Column(String(32), default="pending")   # pending|running|done|error|skipped
-    contextual_status = Column(String(32), default="pending")
-    graph_status = Column(String(32), default="pending")
+    extraction_status = Column(String(32), default="pending")  # pending|running|done|error|skipped
+    edi_status = Column(String(32), default="pending")         # pending|running|done|error|skipped
+    graph_status = Column(String(32), default="pending")       # pending|running|done|error|skipped
     # Stats
-    chunk_count = Column(Integer, default=0)
     node_count = Column(Integer, default=0)
     edge_count = Column(Integer, default=0)
+    edi_rating = Column(String(32), default="")                # PASS|PARTIAL|FAIL|ERROR|""
     error_message = Column(Text, default="")
 
     chat_sessions = relationship("ChatSession", back_populates="document")

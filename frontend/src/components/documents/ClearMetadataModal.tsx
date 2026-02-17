@@ -9,9 +9,8 @@ import {
 } from "@/lib/api";
 
 const METADATA_LABELS: Record<string, string> = {
-  pageindex: "Page Index",
-  docstore: "Doc Store",
-  chroma: "Vector Embeddings",
+  extraction: "Image Extraction",
+  edi_evaluation: "EDI Evaluation",
   graph: "Knowledge Graph",
   communities: "Communities",
   figures: "Figures",

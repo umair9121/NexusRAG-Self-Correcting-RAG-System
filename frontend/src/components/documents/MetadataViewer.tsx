@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { X, Copy, Check, ChevronDown, ChevronRight, Loader2, AlertCircle, Database, GitBranch, Network, FileText, Columns, Layers } from "lucide-react";
+import { X, Copy, Check, ChevronDown, ChevronRight, Loader2, AlertCircle, GitBranch, Network, FileText, Columns, Shield } from "lucide-react";
 import { getDocumentMetadata } from "@/lib/api";
 
 interface MetadataViewerProps {
@@ -18,9 +18,8 @@ const TAB_CONFIG: {
   icon: React.ReactNode;
   description: string;
 }[] = [
-  { key: "pageindex", label: "Page Index", icon: <FileText size={14} />, description: "Hierarchical section tree with summaries" },
-  { key: "docstore", label: "Doc Store", icon: <Database size={14} />, description: "Text chunks with contextual metadata" },
-  { key: "chroma", label: "Vector Embeddings", icon: <Layers size={14} />, description: "ChromaDB vectors for this document" },
+  { key: "extraction", label: "Image Extraction", icon: <FileText size={14} />, description: "VLM-generated image description and metadata" },
+  { key: "edi_evaluation", label: "EDI Evaluation", icon: <Shield size={14} />, description: "EDI compliance assessment results" },
   { key: "graph", label: "Knowledge Graph", icon: <GitBranch size={14} />, description: "Entity-relationship graph structure" },
   { key: "communities", label: "Communities", icon: <Network size={14} />, description: "Graph community partitions and summaries" },
 ];

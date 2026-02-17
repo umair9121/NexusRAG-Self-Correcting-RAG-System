@@ -28,7 +28,8 @@ from app.schemas import (
     DocumentUpdate,
     ImportFolderRequest,
 )
-from app.modules.contextual import get_chroma_entries_for_document
+from app.modules.image_extraction import load_extraction
+from app.modules.edi_evaluation import load_edi_evaluation
 from app.services.document_service import (
     _path_to_tags,
     bulk_delete_documents,
@@ -63,12 +64,12 @@ def _doc_to_out(doc) -> DocumentOut:
         notes=doc.notes or "",
         created_at=doc.created_at,
         updated_at=doc.updated_at,
-        pageindex_status=doc.pageindex_status or "pending",
-        contextual_status=doc.contextual_status or "pending",
+        extraction_status=doc.extraction_status or "pending",
+        edi_status=doc.edi_status or "pending",
         graph_status=doc.graph_status or "pending",
-        chunk_count=doc.chunk_count or 0,
         node_count=doc.node_count or 0,
         edge_count=doc.edge_count or 0,
+        edi_rating=doc.edi_rating or "",
         error_message=doc.error_message or "",
     )
 
@@ -250,7 +251,7 @@ async def get_doc(doc_id: int, db: AsyncSession = Depends(get_db)):
 async def get_doc_metadata(doc_id: int, db: AsyncSession = Depends(get_db)):
     """
     Return all storage-layer JSON metadata for a document:
-    pageindex tree, graph data, community data, and docstore chunks.
+    extraction data, EDI evaluation, graph data, and community data.
     """
     doc = await get_document(db, doc_id)
     if not doc:
@@ -259,11 +260,15 @@ async def get_doc_metadata(doc_id: int, db: AsyncSession = Depends(get_db)):
     stem = Path(doc.file_path).stem
     result: dict[str, Any] = {}
 
-    # PageIndex tree
-    pi_path = config.PAGEINDEX_DIR / f"{stem}.json"
-    if pi_path.exists():
-        with open(pi_path, "r", encoding="utf-8") as f:
-            result["pageindex"] = json.load(f)
+    # Image extraction data
+    extraction_data = load_extraction(stem)
+    if extraction_data:
+        result["extraction"] = extraction_data
+
+    # EDI evaluation data
+    edi_data = load_edi_evaluation(stem)
+    if edi_data:
+        result["edi_evaluation"] = edi_data
 
     # Knowledge graph
     graph_path = config.GRAPH_DIR / f"{stem}_graph.json"
@@ -276,23 +281,6 @@ async def get_doc_metadata(doc_id: int, db: AsyncSession = Depends(get_db)):
     if comm_path.exists():
         with open(comm_path, "r", encoding="utf-8") as f:
             result["communities"] = json.load(f)
-
-    # Docstore chunks belonging to this document
-    docstore_path = config.STORAGE_DIR / "docstore.json"
-    if docstore_path.exists():
-        with open(docstore_path, "r", encoding="utf-8") as f:
-            all_chunks = json.load(f)
-        doc_chunks = {
-            k: v for k, v in all_chunks.items()
-            if v.get("doc_name") == stem
-        }
-        if doc_chunks:
-            result["docstore"] = doc_chunks
-
-    # ChromaDB vector embeddings for this document
-    chroma_entries = get_chroma_entries_for_document(stem)
-    if chroma_entries:
-        result["chroma"] = chroma_entries
 
     if not result:
         raise HTTPException(status_code=404, detail="No metadata files found for this document")
@@ -308,8 +296,8 @@ async def delete_doc_metadata(
 ):
     """
     Delete selective metadata or all metadata for a document. The document record and file are NOT deleted.
-    Pass body with keys: [] to delete all metadata, or keys: ["pageindex", "chroma", ...] to delete only those.
-    Allowed keys: pageindex, graph, communities, chroma, docstore, figures.
+    Pass body with keys: [] to delete all metadata, or keys: ["extraction", "edi_evaluation", ...] to delete only those.
+    Allowed keys: extraction, edi_evaluation, graph, communities, figures.
     """
     doc = await delete_document_metadata(db, doc_id, keys=body.keys if body else None)
     if not doc:

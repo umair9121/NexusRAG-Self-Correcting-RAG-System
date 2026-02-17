@@ -22,12 +22,12 @@ class DocumentOut(BaseModel):
     notes: str = ""
     created_at: datetime
     updated_at: datetime
-    pageindex_status: str
-    contextual_status: str
+    extraction_status: str
+    edi_status: str
     graph_status: str
-    chunk_count: int
     node_count: int
     edge_count: int
+    edi_rating: str = ""
     error_message: str = ""
 
     class Config:
@@ -67,7 +67,7 @@ class ImportFolderRequest(BaseModel):
 
 class IngestionRequest(BaseModel):
     document_ids: list[int]
-    pipelines: list[str] = Field(default=["pageindex", "contextual", "graph"])
+    pipelines: list[str] = Field(default=["extraction", "edi_evaluation", "graph"])
     only_failed: bool = Field(
         default=False,
         description="If True, run only pipelines that are 'error' or 'pending' for each document (re-run failed/pending stages only).",
@@ -141,7 +141,6 @@ class SystemHealthResponse(BaseModel):
     total_documents: int
     documents_ready: int
     documents_ingesting: int
-    pageindex_trees: list[str] = []
     knowledge_graphs: list[str] = []
     cag_status: dict[str, Any] = {}
 

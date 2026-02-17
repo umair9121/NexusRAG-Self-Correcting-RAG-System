@@ -147,7 +147,7 @@ class OllamaClient:
         model: str | None = None,
     ) -> list[list[float]]:
         payload = {
-            "model": model or config.EMBEDDING_MODEL,
+            "model": model or self.model,
             "input": text if isinstance(text, list) else [text],
         }
         resp = requests.post(self.embed_url, json=payload, timeout=self.timeout)
@@ -249,7 +249,7 @@ class AsyncOllamaClient:
         model: str | None = None,
     ) -> list[list[float]]:
         payload = {
-            "model": model or config.EMBEDDING_MODEL,
+            "model": model or self.model,
             "input": text if isinstance(text, list) else [text],
         }
         for attempt in range(config.OLLAMA_MAX_RETRIES):

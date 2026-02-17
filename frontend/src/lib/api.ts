@@ -95,7 +95,7 @@ export async function getDocument(id: number): Promise<Document> {
   return request<Document>(`/api/documents/${id}`);
 }
 
-/** Fetch all storage-layer metadata JSON for a document (pageindex, graph, communities, docstore). */
+/** Fetch all storage-layer metadata JSON for a document (extraction, edi_evaluation, graph, communities). */
 export async function getDocumentMetadata(id: number): Promise<Record<string, unknown>> {
   return request<Record<string, unknown>>(`/api/documents/${id}/metadata`);
 }
@@ -172,11 +172,10 @@ export async function bulkDeleteDocuments(ids: number[]): Promise<{ deleted: num
 
 /** Metadata keys that can be selectively deleted (match backend METADATA_KEYS). */
 export const METADATA_KEYS = [
-  "pageindex",
+  "extraction",
+  "edi_evaluation",
   "graph",
   "communities",
-  "chroma",
-  "docstore",
   "figures",
 ] as const;
 
@@ -201,7 +200,7 @@ export async function deleteDocumentMetadata(
 
 export async function startIngestion(
   documentIds: number[],
-  pipelines: string[] = ["pageindex", "contextual", "graph"],
+  pipelines: string[] = ["extraction", "edi_evaluation", "graph"],
   options?: { onlyFailed?: boolean },
 ): Promise<unknown> {
   return request("/api/ingestion/start", {
@@ -320,19 +319,7 @@ export async function getSystemHealth(): Promise<SystemHealth> {
   return request<SystemHealth>("/api/system/health");
 }
 
-export interface ResetVectorStoreResponse {
-  success: boolean;
-  chroma_reset: boolean;
-  docstore_entries_cleared: number;
-  documents_reset: number;
-  message: string;
-}
-
-export async function resetVectorStore(): Promise<ResetVectorStoreResponse> {
-  return request<ResetVectorStoreResponse>("/api/system/reset-vector-store", {
-    method: "POST",
-  });
-}
+// Vector store reset removed — no longer using vector embeddings
 
 // ── CAG ────────────────────────────────────────────────────────────────────
 

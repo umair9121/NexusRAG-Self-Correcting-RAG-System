@@ -1,12 +1,13 @@
 """
 Configuration for the Hybrid RAG System backend.
 All Ollama and system-level settings are centralized here.
+Focused on GraphRAG + Image Extraction + EDI Evaluation.
 """
 
 import os
 from pathlib import Path
 
-# ── Supported document types (embeddings + ingestion) ────────────────────────
+# ── Supported document types (ingestion) ─────────────────────────────────────
 ALLOWED_EXTENSIONS = frozenset({
     ".pdf", ".doc", ".docx",
     ".xlsx", ".xlsm", ".xls",
@@ -19,14 +20,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent          # backend/
 PROJECT_ROOT = BASE_DIR.parent                             # Custom_RAG_System/
 DATA_DIR = PROJECT_ROOT / "data"
 STORAGE_DIR = PROJECT_ROOT / "storage"
-CHROMA_DIR = STORAGE_DIR / "chroma"
-PAGEINDEX_DIR = STORAGE_DIR / "pageindex"
 GRAPH_DIR = STORAGE_DIR / "graph_data"
 FIGURES_DIR = STORAGE_DIR / "figures"
+EXTRACTION_DIR = STORAGE_DIR / "extractions"
 DATABASE_PATH = STORAGE_DIR / "rag_system.db"
 
 # Ensure dirs exist
-for d in [DATA_DIR, STORAGE_DIR, CHROMA_DIR, PAGEINDEX_DIR, GRAPH_DIR, FIGURES_DIR]:
+for d in [DATA_DIR, STORAGE_DIR, GRAPH_DIR, FIGURES_DIR, EXTRACTION_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 # ── Ollama Server ───────────────────────────────────────────────────────────
@@ -43,9 +43,8 @@ OLLAMA_CHAT_URL = f"{OLLAMA_BASE_URL}/api/chat"
 OLLAMA_EMBED_URL = f"{OLLAMA_BASE_URL}/api/embed"
 
 # ── Model Configuration ────────────────────────────────────────────────────
-LLM_MODEL = os.getenv("LLM_MODEL", "gemma3:4b")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "qwen3-embedding:4b")
-VLM_MODEL = os.getenv("VLM_MODEL", "qwen3-vl:2b")
+LLM_MODEL = os.getenv("LLM_MODEL", "gemma3:4b-it-qat")
+VLM_MODEL = os.getenv("VLM_MODEL", "qwen2.5vl:3b")
 
 # ── Inference Parameters ────────────────────────────────────────────────────
 REASONING_OPTIONS = {
@@ -58,22 +57,6 @@ GENERATION_OPTIONS = {
     "num_ctx": 8192,
 }
 
-# ── PageIndex Settings ──────────────────────────────────────────────────────
-PAGEINDEX_H1_FONT_SIZE = 16.0
-PAGEINDEX_H2_FONT_SIZE = 14.0
-PAGEINDEX_BODY_FONT_SIZE = 12.0
-PAGEINDEX_BEAM_WIDTH = 2
-PAGEINDEX_SUMMARY_MAX_TOKENS = 50
-
-# ── Vector Embeddings Contextual Process Settings ────────────────────────────
-CHUNK_SIZE = 500
-CHUNK_OVERLAP = 100
-CONTEXT_WINDOW_TOKENS = 500
-TOP_K_RESULTS = 5
-
-# ── Hybrid Search (RRF) ────────────────────────────────────────────────────
-RRF_K = 60
-
 # ── Graph RAG Settings ──────────────────────────────────────────────────────
 GRAPH_COMMUNITY_RESOLUTION = 1.0
 GRAPH_MIN_COMMUNITY_SIZE = 3
@@ -82,11 +65,8 @@ GRAPH_MIN_COMMUNITY_SIZE = 3
 CAG_MAX_DOCUMENT_TOKENS = 6000
 CAG_ENABLED_RAM_THRESHOLD_GB = 8
 
-# ── VLM Fallback Settings ───────────────────────────────────────────────────
-# Chars-per-KB ratio: if Docling markdown / file size falls below this, trigger VLM
-VLM_CHARS_PER_KB_THRESHOLD = 2.0
-# Don't bother checking the ratio on files smaller than this (KB)
-VLM_MIN_FILE_SIZE_KB = 50
+# ── VLM Extraction Settings ─────────────────────────────────────────────────
+VLM_MAX_NEW_TOKENS = 700
 
 # ── Ollama Client Settings ──────────────────────────────────────────────────
 # None = no timeout (wait indefinitely for Ollama). Set to an int (seconds) to cap wait time.

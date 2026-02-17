@@ -10,10 +10,19 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import fitz  # PyMuPDF
+
 from app import config
-from app.modules.contextual import extract_text_from_pdf
 
 logger = logging.getLogger(__name__)
+
+
+def extract_text_from_pdf(pdf_path: str | Path) -> str:
+    """Extract text from a PDF using PyMuPDF."""
+    doc = fitz.open(str(pdf_path))
+    text_parts = [page.get_text() for page in doc]
+    doc.close()
+    return "\n".join(text_parts)
 
 
 def _is_allowed(path: str | Path) -> bool:
@@ -156,7 +165,7 @@ def extract_text_from_file(
 ) -> str:
     """
     Extract plain text from a file based on its extension.
-    Used for ingestion (contextual, graph, minimal PageIndex) and CAG loading.
+    Used for ingestion (graph RAG, image extraction fallback) and CAG loading.
     Returns empty string if type is unsupported or extraction fails.
     """
     path = Path(file_path)

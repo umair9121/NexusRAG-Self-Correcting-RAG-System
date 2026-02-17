@@ -16,7 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import config
 from app.models import Document
-from app.modules.contextual import DocStore, _delete_chroma_by_doc_name
 
 
 def _is_pdf(path: Path) -> bool:
@@ -238,14 +237,41 @@ async def deduplicate_documents(db: AsyncSession) -> int:
 
 
 # Metadata key names for selective delete (must match API/UI)
-METADATA_KEYS = frozenset({"pageindex", "graph", "communities", "chroma", "docstore", "figures"})
+METADATA_KEYS = frozenset({"extraction", "edi_evaluation", "graph", "communities", "figures"})
 
 
-def _delete_metadata_pageindex(doc_stem: str) -> None:
-    """Remove PageIndex tree only."""
-    pi_path = config.PAGEINDEX_DIR / f"{doc_stem}.json"
-    if pi_path.exists():
-        pi_path.unlink()
+def _delete_metadata_extraction(doc_stem: str) -> None:
+    """Remove extraction data JSON (preserving EDI evaluation if present)."""
+    ext_path = config.EXTRACTION_DIR / f"{doc_stem}.json"
+    if ext_path.exists():
+        try:
+            with open(ext_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            edi = data.get("edi_evaluation")
+            if edi:
+                with open(ext_path, "w", encoding="utf-8") as f:
+                    json.dump({"edi_evaluation": edi}, f, indent=2, ensure_ascii=False)
+            else:
+                ext_path.unlink()
+        except Exception:
+            ext_path.unlink()
+
+
+def _delete_metadata_edi(doc_stem: str) -> None:
+    """Remove EDI evaluation data from extraction JSON."""
+    ext_path = config.EXTRACTION_DIR / f"{doc_stem}.json"
+    if ext_path.exists():
+        try:
+            with open(ext_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            data.pop("edi_evaluation", None)
+            if data:
+                with open(ext_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+            else:
+                ext_path.unlink()
+        except Exception:
+            pass
 
 
 def _delete_metadata_graph(doc_stem: str) -> None:
@@ -254,22 +280,6 @@ def _delete_metadata_graph(doc_stem: str) -> None:
         gp = config.GRAPH_DIR / f"{doc_stem}{suffix}"
         if gp.exists():
             gp.unlink()
-
-
-def _delete_metadata_chroma(doc_stem: str) -> None:
-    """Remove ChromaDB vectors for this document."""
-    try:
-        _delete_chroma_by_doc_name(doc_stem)
-    except Exception:
-        pass
-
-
-def _delete_metadata_docstore(doc_stem: str) -> None:
-    """Remove DocStore chunks for this document."""
-    try:
-        DocStore().delete_by_doc_name(doc_stem)
-    except Exception:
-        pass
 
 
 def _delete_metadata_figures(doc_stem: str) -> None:
@@ -283,11 +293,10 @@ def _delete_metadata_figures(doc_stem: str) -> None:
 
 
 def _cleanup_index_data(doc_stem: str):
-    """Remove PageIndex tree, Graph data, ChromaDB vectors, DocStore chunks, and figures for a document."""
-    _delete_metadata_pageindex(doc_stem)
+    """Remove all pipeline metadata for a document."""
+    _delete_metadata_extraction(doc_stem)
+    _delete_metadata_edi(doc_stem)
     _delete_metadata_graph(doc_stem)
-    _delete_metadata_chroma(doc_stem)
-    _delete_metadata_docstore(doc_stem)
     _delete_metadata_figures(doc_stem)
 
 
@@ -298,7 +307,7 @@ async def delete_document_metadata(
 ) -> Document | None:
     """
     Delete selective metadata (or all) for a document. Does NOT delete the document record or file.
-    keys: optional list of metadata types to delete (pageindex, graph, communities, chroma, docstore, figures).
+    keys: optional list of metadata types to delete (extraction, edi_evaluation, graph, communities, figures).
           If None or empty, deletes all metadata.
     Returns the updated document or None if not found.
     """
@@ -313,29 +322,20 @@ async def delete_document_metadata(
     if not to_delete:
         to_delete = METADATA_KEYS  # delete all if no valid keys specified
 
-    if "pageindex" in to_delete:
-        _delete_metadata_pageindex(stem)
-        doc.pageindex_status = "pending"
+    if "extraction" in to_delete:
+        _delete_metadata_extraction(stem)
+        doc.extraction_status = "pending"
+    if "edi_evaluation" in to_delete:
+        _delete_metadata_edi(stem)
+        doc.edi_status = "pending"
+        doc.edi_rating = ""
     if "graph" in to_delete or "communities" in to_delete:
         _delete_metadata_graph(stem)
         doc.graph_status = "pending"
         doc.node_count = 0
         doc.edge_count = 0
-    if "chroma" in to_delete:
-        _delete_metadata_chroma(stem)
-        doc.contextual_status = "pending"
-        doc.chunk_count = 0
-    if "docstore" in to_delete:
-        _delete_metadata_docstore(stem)
-        doc.contextual_status = "pending"
-        doc.chunk_count = 0
     if "figures" in to_delete:
         _delete_metadata_figures(stem)
-
-    # If we cleared chroma or docstore, ensure counts/status reset
-    if "chroma" in to_delete or "docstore" in to_delete:
-        doc.chunk_count = 0
-        doc.contextual_status = "pending"
 
     # After clearing any pipeline metadata, status is no longer "ready"
     if to_delete:

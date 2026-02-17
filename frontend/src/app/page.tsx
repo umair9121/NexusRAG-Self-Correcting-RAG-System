@@ -1,14 +1,13 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { Upload, Search, Filter, AlertCircle, RefreshCw, DatabaseZap } from "lucide-react";
+import { Upload, Search, Filter, AlertCircle, RefreshCw } from "lucide-react";
 import { listDocuments, getIngestionStatus, getRecoveryJobs, isBackendAvailable, API_BASE } from "@/lib/api";
 import type { Document, IngestionStatus, RecoveryJob } from "@/lib/types";
 import DocumentTable from "@/components/documents/DocumentTable";
 import UploadModal from "@/components/documents/UploadModal";
 import IngestionBanner from "@/components/documents/IngestionBanner";
 import ResumeIngestionModal from "@/components/documents/ResumeIngestionModal";
-import ResetVectorStoreModal from "@/components/documents/ResetVectorStoreModal";
 
 export default function DocumentsPage() {
   const [documents, setDocuments] = useState<Document[]>([]);
@@ -17,7 +16,6 @@ export default function DocumentsPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [showUpload, setShowUpload] = useState(false);
-  const [showResetVectorStore, setShowResetVectorStore] = useState(false);
   const [backendOk, setBackendOk] = useState<boolean | null>(null);
   const [ingestionStatus, setIngestionStatus] = useState<IngestionStatus | null>(null);
   const [recoveryJobs, setRecoveryJobs] = useState<RecoveryJob[]>([]);
@@ -144,14 +142,6 @@ export default function DocumentsPage() {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => setShowResetVectorStore(true)}
-            className="flex items-center gap-2 px-4 py-2.5 bg-[var(--btn-warning-bg)] border border-[var(--btn-warning-border)] text-[var(--btn-warning-text)] rounded-lg hover:bg-[var(--btn-warning-hover-bg)] transition-colors"
-            title="Reset vector store to switch embedding models"
-          >
-            <DatabaseZap size={16} />
-            Reset Vector Store
-          </button>
-          <button
             onClick={() => setShowUpload(true)}
             className="flex items-center gap-2 px-4 py-2.5 bg-[var(--accent)] text-white rounded-lg hover:bg-[var(--accent-hover)] transition-colors"
           >
@@ -205,13 +195,6 @@ export default function DocumentsPage() {
 
       {/* Upload Modal */}
       <UploadModal open={showUpload} onClose={() => setShowUpload(false)} onUploaded={fetchDocs} />
-
-      {/* Reset Vector Store Modal */}
-      <ResetVectorStoreModal
-        open={showResetVectorStore}
-        onClose={() => setShowResetVectorStore(false)}
-        onSuccess={fetchDocs}
-      />
 
       {/* Resume Ingestion Modal (shown on startup if interrupted jobs exist) */}
       {recoveryJobs.length > 0 && (
