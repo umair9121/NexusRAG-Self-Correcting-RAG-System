@@ -7,7 +7,9 @@ import {
   createChatSession,
   getChatMessages,
   sendChatMessage,
+  setChatPreference,
   deleteChatSession,
+  updateChatSession,
   getChatSessionState,
   getSystemHealth,
 } from "@/lib/api";
@@ -29,6 +31,16 @@ export default function ChatPage() {
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [backendUnavailable, setBackendUnavailable] = useState(false);
+  // Response mode: fast = vector + LLM only; deeper = full adaptive RAG
+  const [responseMode, setResponseMode] = useState<"fast" | "deeper">("deeper");
+  // Deeper Thinking toggles (only apply when responseMode === "deeper")
+  const [enableVector, setEnableVector] = useState(true);
+  const [enableTaxonomy, setEnableTaxonomy] = useState(true);
+  const [enablePageIndex, setEnablePageIndex] = useState(true);
+  const [enableGraph, setEnableGraph] = useState(true);
+
+  const [editingSessionId, setEditingSessionId] = useState<number | null>(null);
+  const [editingValue, setEditingValue] = useState("");
 
   const fetchSessions = useCallback(async () => {
     try {
@@ -99,20 +111,44 @@ export default function ChatPage() {
     }
   };
 
+  const handleRenameSession = async (sessionId: number, newTitle: string) => {
+    const title = newTitle.trim() || "New Chat";
+    setEditingSessionId(null);
+    setEditingValue("");
+    try {
+      await updateChatSession(sessionId, title);
+      await fetchSessions();
+    } catch (err) {
+      console.error("Failed to rename chat:", err);
+    }
+  };
+
   const handleSend = async (content: string) => {
     if (!activeSession) return;
+    // Time tracking: record when chat is sent (second precision)
+    const sentAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
     // Optimistic: add user message
-    const userMsg: ChatMessage = { role: "user", content, trace: [], metadata: {}, route: "" };
+    const userMsg: ChatMessage = {
+      role: "user",
+      content,
+      trace: [],
+      metadata: {},
+      route: "",
+      sent_at: sentAt,
+    };
     setMessages((prev) => [...prev, userMsg]);
     setLoading(true);
     try {
-      const assistantMsg = await sendChatMessage(
-        activeSession,
-        content,
-        forceRoute,
+      const assistantMsg = await sendChatMessage(activeSession, content, {
+        force_route: forceRoute,
         temperature,
-        selectedModel,
-      );
+        model: selectedModel,
+        fast_response: responseMode === "fast",
+        enable_vector: enableVector,
+        enable_taxonomy: enableTaxonomy,
+        enable_pageindex: enablePageIndex,
+        enable_graph: enableGraph,
+      });
       setMessages((prev) => [...prev, assistantMsg]);
       await fetchSessions(); // update message counts
     } catch (err) {
@@ -126,6 +162,16 @@ export default function ChatPage() {
       setMessages((prev) => [...prev, errorMsg]);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSetPreference = async (optionText: string, accepted: boolean) => {
+    if (!activeSession) return;
+    try {
+      await setChatPreference(activeSession, optionText, accepted);
+      await fetchSessions();
+    } catch (err) {
+      console.error("Failed to save chat preference:", err);
     }
   };
 
@@ -164,11 +210,37 @@ export default function ChatPage() {
               className={`flex items-center gap-2 px-3 py-2.5 cursor-pointer border-b border-[var(--border)] transition-colors ${
                 activeSession === s.id ? "bg-[var(--bg-tertiary)]" : "hover:bg-[var(--bg-tertiary)]/50"
               }`}
-              onClick={() => loadMessages(s.id)}
+              onClick={() => {
+                if (editingSessionId !== s.id) loadMessages(s.id);
+              }}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                setEditingSessionId(s.id);
+                setEditingValue(s.title);
+              }}
             >
               <MessageSquare size={14} className="text-[var(--text-secondary)] shrink-0" />
               <div className="flex-1 min-w-0">
-                <div className="text-sm truncate">{s.title}</div>
+                {editingSessionId === s.id ? (
+                  <input
+                    type="text"
+                    value={editingValue}
+                    onChange={(e) => setEditingValue(e.target.value)}
+                    onBlur={() => handleRenameSession(s.id, editingValue)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleRenameSession(s.id, editingValue);
+                      if (e.key === "Escape") {
+                        setEditingSessionId(null);
+                        setEditingValue("");
+                      }
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    className="w-full text-sm bg-[var(--bg-primary)] border border-[var(--accent)] rounded px-1.5 py-0.5 text-[var(--text-primary)] focus:outline-none"
+                    autoFocus
+                  />
+                ) : (
+                  <div className="text-sm truncate">{s.title}</div>
+                )}
                 <div className="text-xs text-[var(--text-secondary)]">{s.message_count} messages</div>
               </div>
               <button
@@ -193,6 +265,7 @@ export default function ChatPage() {
           <ChatPanel
             messages={messages}
             onSend={handleSend}
+            onSetPreference={handleSetPreference}
             loading={loading}
             forceRoute={forceRoute}
             onRouteChange={setForceRoute}
@@ -201,6 +274,16 @@ export default function ChatPage() {
             ollamaModels={ollamaModels}
             selectedModel={selectedModel}
             onModelChange={setSelectedModel}
+            responseMode={responseMode}
+            onResponseModeChange={setResponseMode}
+            enableVector={enableVector}
+            enableTaxonomy={enableTaxonomy}
+            enablePageIndex={enablePageIndex}
+            enableGraph={enableGraph}
+            onEnableVectorChange={setEnableVector}
+            onEnableTaxonomyChange={setEnableTaxonomy}
+            onEnablePageIndexChange={setEnablePageIndex}
+            onEnableGraphChange={setEnableGraph}
           />
         ) : (
           <div className="flex items-center justify-center h-full text-[var(--text-secondary)]">

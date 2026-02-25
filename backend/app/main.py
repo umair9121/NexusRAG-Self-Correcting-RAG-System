@@ -4,19 +4,61 @@ FastAPI application – entry point for the Hybrid RAG backend.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
+import aiohttp
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from sqlalchemy import select
 
+from app import config
 from app.database import async_session, init_db
 from app.logger import broadcaster, logger
 from app.models import Document
 from app.services.document_service import deduplicate_documents
 from app.services.ingestion_worker import ingestion_worker
 from app.services.ingestion_state import ingestion_state
+
+
+async def _verify_ollama_models() -> None:
+    """At startup, fetch Ollama /api/tags and log which configured models are loaded."""
+    configured = [
+        ("LLM", config.LLM_MODEL),
+        ("FAST_RESPONSE", config.FAST_RESPONSE_MODEL),
+        ("INTERNAL_REASONING_AGENT", config.INTERNAL_REASONING_AGENT),
+        ("EMBEDDING", config.EMBEDDING_MODEL),
+        ("VLM", config.VLM_MODEL),
+    ]
+    if getattr(config, "RERANKER_ENABLED", False) and getattr(config, "RERANKER_MODEL", ""):
+        configured.append(("RERANKER", config.RERANKER_MODEL))
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.get(f"{config.OLLAMA_BASE_URL.rstrip('/')}/api/tags") as resp:
+                if resp.status != 200:
+                    logger.warning(
+                        "Ollama /api/tags returned %s; skipping model verification",
+                        resp.status,
+                    )
+                    return
+                data = await resp.json()
+    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        logger.warning("Ollama not reachable at %s: %s — skipping model verification", config.OLLAMA_BASE_URL, exc)
+        return
+    models = data.get("models") or []
+    names = {m.get("name") for m in models if m.get("name")}
+    logger.info("Ollama configured models (vs loaded):")
+    for label, model in configured:
+        if not model or not model.strip():
+            continue
+        if model in names:
+            logger.info("  %s (%s): loaded", label, model)
+        else:
+            logger.warning(
+                "  %s (%s): NOT in Ollama — run: ollama pull %s",
+                label, model, model,
+            )
 
 
 @asynccontextmanager
@@ -52,11 +94,11 @@ async def lifespan(app: FastAPI):
                 existing = ingestion_state.get_all()
                 if str(doc.id) not in existing:
                     # Determine which pipelines were originally requested (assume all 3)
-                    all_pipelines = ["extraction", "edi_evaluation", "graph"]
+                    all_pipelines = ["pageindex", "contextual", "graph"]
                     completed = []
                     for p, col in [
-                        ("extraction", doc.extraction_status),
-                        ("edi_evaluation", doc.edi_status),
+                        ("pageindex", doc.pageindex_status),
+                        ("contextual", doc.contextual_status),
                         ("graph", doc.graph_status),
                     ]:
                         if col == "done":
@@ -81,6 +123,11 @@ async def lifespan(app: FastAPI):
             len(interrupted),
         )
 
+    logger.info(
+        "Ollama models: LLM=%s, INTERNAL_REASONING_AGENT=%s, EMBEDDING=%s, VLM=%s",
+        config.LLM_MODEL, config.INTERNAL_REASONING_AGENT, config.EMBEDDING_MODEL, config.VLM_MODEL,
+    )
+    await _verify_ollama_models()
     logger.info("Starting ingestion worker...")
     ingestion_worker.start()
     broadcaster.start_background_drain()  # so ingestion logs from worker threads reach UI
@@ -92,9 +139,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="GraphRAG System",
-    description="Adaptive RAG backend with Graph RAG, Image Extraction, EDI Evaluation, and CAG",
-    version="2.0.0",
+    title="Hybrid RAGSystem",
+    description="Adaptive RAG backend with PageIndex, Vector, Graph, and CAG retrieval",
+    version="1.0.0",
     lifespan=lifespan,
 )
 
@@ -123,6 +170,7 @@ from app.routes.documents import router as documents_router
 from app.routes.ingestion import router as ingestion_router
 from app.routes.query import router as query_router
 from app.routes.chat import router as chat_router
+from app.routes.workspaces import router as workspaces_router
 from app.routes.system import router as system_router
 from app.routes.websocket import router as ws_router
 
@@ -141,6 +189,7 @@ app.include_router(documents_router)
 app.include_router(ingestion_router)
 app.include_router(query_router)
 app.include_router(chat_router)
+app.include_router(workspaces_router)
 app.include_router(system_router)
 app.include_router(ws_router)
 
@@ -175,6 +224,7 @@ async def api_info():
             "GET  /api/documents",
             "POST /api/documents/upload",
             "GET  /api/chat/sessions",
+            "GET  /api/workspaces",
             "GET  /api/system/health",
             "GET  /api/hardware/profile",
             "GET  /api/hardware/options",

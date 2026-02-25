@@ -8,6 +8,7 @@ import asyncio
 import json
 import shutil
 import uuid
+from datetime import timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,14 +23,15 @@ from app.models import Document
 from app.schemas import (
     BulkDeleteRequest,
     DeleteMetadataRequest,
+    DocumentFacetsResponse,
     DocumentIdsResponse,
     DocumentListResponse,
     DocumentOut,
     DocumentUpdate,
     ImportFolderRequest,
 )
-from app.modules.image_extraction import load_extraction
-from app.modules.edi_evaluation import load_edi_evaluation
+from app.modules.contextual import get_chroma_entries_for_document
+from app.modules.pdf_images import get_stored_page_images
 from app.services.document_service import (
     _path_to_tags,
     bulk_delete_documents,
@@ -37,6 +39,9 @@ from app.services.document_service import (
     delete_document,
     delete_document_metadata,
     get_document,
+    get_document_facets,
+    get_target_segments_from_full_path,
+    get_target_segments_from_relative_path,
     list_document_ids,
     list_documents,
     update_document,
@@ -54,6 +59,24 @@ def _doc_to_out(doc) -> DocumentOut:
         tags = json.loads(doc.tags) if doc.tags else []
     except (json.JSONDecodeError, TypeError):
         tags = []
+    path_hierarchy = []
+    try:
+        path_hierarchy = json.loads(doc.path_hierarchy) if getattr(doc, "path_hierarchy", None) else []
+    except (json.JSONDecodeError, TypeError):
+        path_hierarchy = []
+    # SQLite returns naive datetimes; tag as UTC so JSON includes "Z" and frontend shows correct local time
+    created_at = doc.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    updated_at = doc.updated_at
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    audit_result = None
+    if getattr(doc, "audit_result", None):
+        try:
+            audit_result = json.loads(doc.audit_result)
+        except (json.JSONDecodeError, TypeError):
+            pass
     return DocumentOut(
         id=doc.id,
         filename=doc.filename,
@@ -61,16 +84,20 @@ def _doc_to_out(doc) -> DocumentOut:
         page_count=doc.page_count,
         status=doc.status,
         tags=tags,
+        path_hierarchy=path_hierarchy,
         notes=doc.notes or "",
-        created_at=doc.created_at,
-        updated_at=doc.updated_at,
-        extraction_status=doc.extraction_status or "pending",
-        edi_status=doc.edi_status or "pending",
+        created_at=created_at,
+        updated_at=updated_at,
+        pageindex_status=doc.pageindex_status or "pending",
+        contextual_status=doc.contextual_status or "pending",
         graph_status=doc.graph_status or "pending",
+        chunk_count=doc.chunk_count or 0,
         node_count=doc.node_count or 0,
         edge_count=doc.edge_count or 0,
-        edi_rating=doc.edi_rating or "",
         error_message=doc.error_message or "",
+        ingestion_duration_seconds=getattr(doc, "ingestion_duration_seconds", None),
+        ingestion_type=getattr(doc, "ingestion_type", "document") or "document",
+        audit_result=audit_result,
     )
 
 
@@ -82,9 +109,22 @@ async def list_docs(
     search: str | None = None,
     status: str | None = None,
     tag: str | None = None,
+    needs_ingestion: bool = Query(False),
+    sort_by: str | None = None,
+    sort_order: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
-    docs, total = await list_documents(db, page=page, page_size=page_size, search=search, status=status, tag=tag)
+    docs, total = await list_documents(
+        db,
+        page=page,
+        page_size=page_size,
+        search=search,
+        status=status,
+        tag=tag,
+        needs_ingestion=needs_ingestion,
+        sort_by=sort_by,
+        sort_order=sort_order,
+    )
     return DocumentListResponse(
         documents=[_doc_to_out(d) for d in docs],
         total=total,
@@ -93,16 +133,37 @@ async def list_docs(
     )
 
 
+@router.get("/facets", response_model=DocumentFacetsResponse)
+async def get_facets(
+    search: str | None = None,
+    status: str | None = None,
+    tag: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return document counts by status, by tag, and needs_ingestion_count for filter UI."""
+    by_status, by_tag, needs_ingestion_count = await get_document_facets(
+        db, search=search, status=status, tag=tag
+    )
+    return DocumentFacetsResponse(
+        by_status=by_status,
+        by_tag=by_tag,
+        needs_ingestion_count=needs_ingestion_count,
+    )
+
+
 @router.get("/ids", response_model=DocumentIdsResponse)
 async def list_doc_ids(
     search: str | None = None,
     status: str | None = None,
     tag: str | None = None,
+    needs_ingestion: bool = Query(False),
     limit: int = Query(10_000, ge=1, le=50_000),
     db: AsyncSession = Depends(get_db),
 ):
     """Return document IDs matching the same filters as list_docs, for bulk select-all."""
-    ids = await list_document_ids(db, search=search, status=status, tag=tag, limit=limit)
+    ids = await list_document_ids(
+        db, search=search, status=status, tag=tag, needs_ingestion=needs_ingestion, limit=limit
+    )
     return DocumentIdsResponse(ids=ids)
 
 
@@ -160,7 +221,10 @@ async def upload_docs(
             dest = import_dir / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             display_name = rel
-            tags = _path_to_tags(rel)
+            # Folder-only segment names as tags and path_hierarchy (no filename, no full path string)
+            file_segments = get_target_segments_from_relative_path(rel)
+            tags = file_segments
+            path_hierarchy = file_segments
         else:
             dest = config.DATA_DIR / file.filename
             counter = 1
@@ -170,9 +234,14 @@ async def upload_docs(
                 counter += 1
             display_name = file.filename
             tags = None
+            path_hierarchy = None
         with open(dest, "wb") as f:
             shutil.copyfileobj(file.file, f)
-        doc = await create_document(db, display_name, str(dest), initial_tags=tags)
+        doc = await create_document(
+            db, display_name, str(dest),
+            initial_tags=tags,
+            initial_path_hierarchy=path_hierarchy if path_hierarchy is not None else None,
+        )
         results.append(_doc_to_out(doc))
     return results
 
@@ -180,6 +249,17 @@ async def upload_docs(
 def _normalize_filename(name: str) -> str:
     """Canonical form for duplicate checks: forward slashes, no leading/trailing slashes."""
     return name.replace("\\", "/").strip("/")
+
+
+def _normalize_import_path(path_input: str) -> str:
+    """Strip whitespace and optional surrounding quotes so path is usable on this machine."""
+    if not path_input or not isinstance(path_input, str):
+        return path_input or ""
+    s = path_input.strip()
+    # Remove surrounding quotes if user pasted "C:\..." or 'C:\...'
+    if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+        s = s[1:-1].strip()
+    return s
 
 
 @router.post("/import-folder", response_model=list[DocumentOut])
@@ -192,14 +272,29 @@ async def import_folder(
     copies files into data/imports/<id>/ preserving relative structure, and creates
     document records. Use when the backend runs on the same machine as the folder (e.g. local dev).
     """
-    root = Path(req.path).resolve()
+    path_str = _normalize_import_path(req.path)
+    if not path_str:
+        raise HTTPException(status_code=400, detail="Path is empty")
+    root = Path(path_str).resolve()
+    if not root.exists():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Path does not exist: {root!s}. Ensure the backend runs on the machine that has access to this path (e.g. same Windows/Linux host).",
+        )
+    if root.is_file():
+        root = root.parent
     if not root.is_dir():
-        raise HTTPException(status_code=400, detail="Path is not a directory")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Path is not a directory: {root!s}",
+        )
 
     async with _import_folder_lock:
         config.DATA_DIR.mkdir(parents=True, exist_ok=True)
         import_dir = config.DATA_DIR / "imports" / uuid.uuid4().hex
         import_dir.mkdir(parents=True, exist_ok=True)
+        # Full path of selected folder: extract target segments from first anchor (e.g. Trader) onward
+        root_target_segments = get_target_segments_from_full_path(root, relative_path_under_root="")
         results = []
         try:
             seen: set[str] = set()
@@ -231,8 +326,15 @@ async def import_folder(
                 dest = import_dir / rel_str
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(abs_path, dest)
-                tags = _path_to_tags(rel_str)
-                doc = await create_document(db, rel_str, str(dest), initial_tags=tags)
+                # Tags and hierarchy: root target segments + folder segments from relative path
+                file_segments = get_target_segments_from_full_path(root, relative_path_under_root=rel_str)
+                tags = file_segments
+                path_hierarchy = file_segments
+                doc = await create_document(
+                    db, rel_str, str(dest),
+                    initial_tags=tags,
+                    initial_path_hierarchy=path_hierarchy,
+                )
                 results.append(_doc_to_out(doc))
         except PermissionError as e:
             raise HTTPException(status_code=403, detail=f"Permission denied: {e}")
@@ -251,7 +353,7 @@ async def get_doc(doc_id: int, db: AsyncSession = Depends(get_db)):
 async def get_doc_metadata(doc_id: int, db: AsyncSession = Depends(get_db)):
     """
     Return all storage-layer JSON metadata for a document:
-    extraction data, EDI evaluation, graph data, and community data.
+    pageindex tree, graph data, community data, and docstore chunks.
     """
     doc = await get_document(db, doc_id)
     if not doc:
@@ -260,15 +362,20 @@ async def get_doc_metadata(doc_id: int, db: AsyncSession = Depends(get_db)):
     stem = Path(doc.file_path).stem
     result: dict[str, Any] = {}
 
-    # Image extraction data
-    extraction_data = load_extraction(stem)
-    if extraction_data:
-        result["extraction"] = extraction_data
+    # PageIndex tree
+    pi_path = config.PAGEINDEX_DIR / f"{stem}.json"
+    if pi_path.exists():
+        with open(pi_path, "r", encoding="utf-8") as f:
+            result["pageindex"] = json.load(f)
 
-    # EDI evaluation data
-    edi_data = load_edi_evaluation(stem)
-    if edi_data:
-        result["edi_evaluation"] = edi_data
+    # PDF page images (for VLM visual answer; present when ingestion extracted them)
+    stored_images = get_stored_page_images(stem)
+    if stored_images:
+        result["pdf_page_images"] = {
+            "available": True,
+            "count": len(stored_images),
+            "path": str(config.PDF_IMAGES_DIR / stem),
+        }
 
     # Knowledge graph
     graph_path = config.GRAPH_DIR / f"{stem}_graph.json"
@@ -281,6 +388,23 @@ async def get_doc_metadata(doc_id: int, db: AsyncSession = Depends(get_db)):
     if comm_path.exists():
         with open(comm_path, "r", encoding="utf-8") as f:
             result["communities"] = json.load(f)
+
+    # Docstore chunks belonging to this document
+    docstore_path = config.STORAGE_DIR / "docstore.json"
+    if docstore_path.exists():
+        with open(docstore_path, "r", encoding="utf-8") as f:
+            all_chunks = json.load(f)
+        doc_chunks = {
+            k: v for k, v in all_chunks.items()
+            if v.get("doc_name") == stem
+        }
+        if doc_chunks:
+            result["docstore"] = doc_chunks
+
+    # ChromaDB vector embeddings for this document
+    chroma_entries = get_chroma_entries_for_document(stem)
+    if chroma_entries:
+        result["chroma"] = chroma_entries
 
     if not result:
         raise HTTPException(status_code=404, detail="No metadata files found for this document")
@@ -296,8 +420,8 @@ async def delete_doc_metadata(
 ):
     """
     Delete selective metadata or all metadata for a document. The document record and file are NOT deleted.
-    Pass body with keys: [] to delete all metadata, or keys: ["extraction", "edi_evaluation", ...] to delete only those.
-    Allowed keys: extraction, edi_evaluation, graph, communities, figures.
+    Pass body with keys: [] to delete all metadata, or keys: ["pageindex", "chroma", ...] to delete only those.
+    Allowed keys: pageindex, graph, communities, chroma, docstore, figures.
     """
     doc = await delete_document_metadata(db, doc_id, keys=body.keys if body else None)
     if not doc:
@@ -313,6 +437,7 @@ _FILE_MEDIA_TYPES = {
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
     ".xls": "application/vnd.ms-excel",
+    ".csv": "text/csv",
     ".json": "application/json",
     ".html": "text/html",
     ".htm": "text/html",
@@ -348,7 +473,12 @@ async def update_doc(
     update: DocumentUpdate,
     db: AsyncSession = Depends(get_db),
 ):
-    doc = await update_document(db, doc_id, tags=update.tags, notes=update.notes)
+    doc = await update_document(
+        db, doc_id,
+        tags=update.tags,
+        path_hierarchy=update.path_hierarchy,
+        notes=update.notes,
+    )
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     return _doc_to_out(doc)

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { GitBranch, Database } from "lucide-react";
+import { TreePine, GitBranch, Database } from "lucide-react";
 import { getSystemHealth } from "@/lib/api";
 import type { SystemHealth } from "@/lib/types";
 
@@ -18,10 +18,30 @@ export default function ExplorePage() {
     <div className="p-6">
       <h1 className="text-2xl font-bold mb-1">Explore Data</h1>
       <p className="text-sm text-[var(--text-secondary)] mb-6">
-        Inspect knowledge graphs and system statistics
+        Inspect indexed PageIndex trees, knowledge graphs, and system statistics
       </p>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {/* PageIndex Trees */}
+        <div className="border border-[var(--border)] rounded-xl bg-[var(--bg-secondary)] p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <TreePine size={20} className="text-green-400" />
+            <h2 className="font-semibold">PageIndex Trees</h2>
+          </div>
+          {health?.pageindex_trees?.length ? (
+            <ul className="space-y-2">
+              {health.pageindex_trees.map((name) => (
+                <li key={name} className="flex items-center gap-2 px-3 py-2 bg-[var(--bg-tertiary)] rounded-lg text-sm">
+                  <TreePine size={14} className="text-green-400" />
+                  {name}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-[var(--text-secondary)]">No PageIndex trees built yet</p>
+          )}
+        </div>
+
         {/* Knowledge Graphs */}
         <div className="border border-[var(--border)] rounded-xl bg-[var(--bg-secondary)] p-5">
           <div className="flex items-center gap-2 mb-4">

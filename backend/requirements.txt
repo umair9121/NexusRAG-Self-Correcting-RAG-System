@@ -1,4 +1,5 @@
 # FastAPI backend
+python-dotenv>=1.0.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 python-multipart>=0.0.18
@@ -17,6 +18,11 @@ rich>=13.9.0
 
 # PDF Processing
 PyMuPDF>=1.25.0
+# Fast OCR for triage route ocr_scanned (Tesseract)
+pytesseract>=0.3.10
+Pillow>=10.0.0
+# Primary digital-PDF -> Markdown parser for PageIndex
+pymupdf4llm>=0.0.17
 # Structured OCR for empty documents (default): layout → Markdown → PageIndex tree
 docling>=2.0.0
 # Fallback when Docling fails: deepdoctection (layout + OCR + optional figures)

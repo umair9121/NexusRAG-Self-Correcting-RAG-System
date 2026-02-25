@@ -19,16 +19,20 @@ class DocumentOut(BaseModel):
     page_count: int
     status: str
     tags: list[str] = []
+    path_hierarchy: list[str] = []
     notes: str = ""
     created_at: datetime
     updated_at: datetime
-    extraction_status: str
-    edi_status: str
+    pageindex_status: str
+    contextual_status: str
     graph_status: str
+    chunk_count: int
     node_count: int
     edge_count: int
-    edi_rating: str = ""
     error_message: str = ""
+    ingestion_duration_seconds: int | None = None
+    ingestion_type: str = "document"   # document | screenshot | regulatory
+    audit_result: dict[str, Any] | None = None  # UI audit JSON when ingestion_type is screenshot
 
     class Config:
         from_attributes = True
@@ -45,8 +49,16 @@ class DocumentIdsResponse(BaseModel):
     ids: list[int]
 
 
+class DocumentFacetsResponse(BaseModel):
+    """Counts by status, by tag, and total needing ingestion (for filter UI)."""
+    by_status: dict[str, int] = {}
+    by_tag: dict[str, int] = {}
+    needs_ingestion_count: int = 0
+
+
 class DocumentUpdate(BaseModel):
     tags: list[str] | None = None
+    path_hierarchy: list[str] | None = None
     notes: str | None = None
 
 
@@ -67,7 +79,7 @@ class ImportFolderRequest(BaseModel):
 
 class IngestionRequest(BaseModel):
     document_ids: list[int]
-    pipelines: list[str] = Field(default=["extraction", "edi_evaluation", "graph"])
+    pipelines: list[str] = Field(default=["pageindex", "contextual", "graph"])
     only_failed: bool = Field(
         default=False,
         description="If True, run only pipelines that are 'error' or 'pending' for each document (re-run failed/pending stages only).",
@@ -101,10 +113,32 @@ class QueryResponse(BaseModel):
 
 # ── Chat ────────────────────────────────────────────────────────────────────
 
+class WorkspaceOut(BaseModel):
+    id: int
+    name: str
+    workspace_cache: str = ""
+    created_at: datetime
+    updated_at: datetime
+    last_used_at: datetime
+    chat_count: int = 0
+
+    class Config:
+        from_attributes = True
+
+
+class WorkspaceCreate(BaseModel):
+    name: str = "New Workspace"
+
+
+class WorkspaceUpdate(BaseModel):
+    name: str
+
+
 class ChatSessionOut(BaseModel):
     id: int
     title: str
     document_id: int | None
+    workspace_id: int | None = None
     created_at: datetime
     message_count: int = 0
 
@@ -115,6 +149,11 @@ class ChatSessionOut(BaseModel):
 class ChatSessionCreate(BaseModel):
     title: str = "New Chat"
     document_id: int | None = None
+    workspace_id: int | None = None
+
+
+class ChatSessionUpdate(BaseModel):
+    title: str
 
 
 class ChatMessageRequest(BaseModel):
@@ -122,6 +161,18 @@ class ChatMessageRequest(BaseModel):
     force_route: str | None = None
     temperature: float = 0.2
     model: str | None = None
+    # Fast Response = vector search + LLM only; Deeper Thinking = full adaptive RAG
+    fast_response: bool = False
+    # For Deeper Thinking: which retrievers to use (all True = current behaviour)
+    enable_vector: bool = True
+    enable_taxonomy: bool = True
+    enable_pageindex: bool = True
+    enable_graph: bool = True
+
+
+class ChatPreferenceRequest(BaseModel):
+    option_text: str
+    accepted: bool
 
 
 class ChatMessageOut(BaseModel):
@@ -130,6 +181,9 @@ class ChatMessageOut(BaseModel):
     trace: list[str] = []
     metadata: dict[str, Any] = {}
     route: str = ""
+    # Time tracking (ISO 8601 with second precision, UTC)
+    sent_at: str | None = None
+    response_received_at: str | None = None
 
 
 # ── System ──────────────────────────────────────────────────────────────────
@@ -141,8 +195,11 @@ class SystemHealthResponse(BaseModel):
     total_documents: int
     documents_ready: int
     documents_ingesting: int
+    pageindex_trees: list[str] = []
     knowledge_graphs: list[str] = []
     cag_status: dict[str, Any] = {}
+    # When > 0, UI can suggest skipping Graph for docs with page_count >= this.
+    graph_skip_page_threshold: int = 0
 
 
 # ── Hardware & Performance Options ──────────────────────────────────────
@@ -192,3 +249,49 @@ class PerformanceOptionsResponse(BaseModel):
 class PerformanceOptionUpdate(BaseModel):
     key: str
     enabled: bool
+
+
+class RefreshKnowledgeBaseRequest(BaseModel):
+    """Optional model override for entity classification. Default is INTERNAL_REASONING_AGENT (e.g. phi3:3.8b)."""
+    model: str | None = None
+
+
+# ── UI / Accessibility audit (SOM + compliance) ─────────────────────────────
+
+class BoundingBox(BaseModel):
+    """Normalized or pixel coordinates for a violating element (e.g. [x_min, y_min, x_max, y_max] or left, top, width, height)."""
+    left: float = 0.0
+    top: float = 0.0
+    width: float = 0.0
+    height: float = 0.0
+    # Optional: normalized 0–1 for image-agnostic use
+    normalized: bool = False
+
+
+class DetectedViolation(BaseModel):
+    """A single EDI/accessibility or regulatory violation with location and guideline reference."""
+    guideline_reference: str = ""   # e.g. "WCAG 2.2 Success Criterion 1.4.3"
+    issue_description: str = ""
+    severity: str = "medium"       # low | medium | high | critical
+    bounding_box: BoundingBox | None = None
+    element_type: str = ""         # e.g. "button", "text", "image"
+    suggested_fix: str = ""
+
+
+class AuditMetadata(BaseModel):
+    screen_id: str = ""
+    timestamp: str = ""
+    evaluation_standard: str = ""   # e.g. "WCAG 2.2 Level AA"
+    overall_compliance_status: str = ""  # Pass | Failed | Partial
+
+
+class GenerativeSynthesis(BaseModel):
+    global_edit_prompt: str = ""
+    negative_prompt: str = ""
+
+
+class UIAuditResult(BaseModel):
+    """Structured output from VLM + Graph RAG compliance audit for a UI screenshot."""
+    audit_metadata: AuditMetadata = Field(default_factory=AuditMetadata)
+    detected_violations: list[DetectedViolation] = Field(default_factory=list)
+    generative_synthesis: GenerativeSynthesis = Field(default_factory=GenerativeSynthesis)

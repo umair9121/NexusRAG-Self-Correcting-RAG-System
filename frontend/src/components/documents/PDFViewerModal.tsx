@@ -8,6 +8,8 @@ interface PDFViewerModalProps {
   onClose: () => void;
   pdfUrl: string;
   documentName: string;
+  /** Open PDF at this 1-based page (appends #page=N to URL where supported). */
+  initialPage?: number;
   onOpenSideBySide?: () => void;
 }
 
@@ -16,17 +18,22 @@ export default function PDFViewerModal({
   onClose,
   pdfUrl,
   documentName,
+  initialPage,
   onOpenSideBySide,
 }: PDFViewerModalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [loading, setLoading] = useState(true);
+  const displayUrl =
+    initialPage != null && initialPage > 0
+      ? `${pdfUrl}#page=${initialPage}`
+      : pdfUrl;
 
   useEffect(() => {
     if (open) {
       setLoading(true);
     }
-  }, [open, pdfUrl]);
+  }, [open, displayUrl]);
 
   useEffect(() => {
     if (!open) return;
@@ -136,7 +143,7 @@ export default function PDFViewerModal({
               </>
             )}
             <a
-              href={pdfUrl}
+              href={displayUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="p-1.5 rounded-lg hover:bg-white/5 transition-all active:scale-95"
@@ -148,7 +155,7 @@ export default function PDFViewerModal({
               href={pdfUrl}
               download={documentName}
               className="p-1.5 rounded-lg hover:bg-white/5 transition-all active:scale-95"
-              title="Download PDF"
+              title="Download"
             >
               <Download size={14} className="text-[var(--text-secondary)]" />
             </a>
@@ -202,7 +209,7 @@ export default function PDFViewerModal({
             </div>
           )}
           <iframe
-            src={pdfUrl}
+            src={displayUrl}
             title={documentName}
             className="w-full h-full rounded-b-2xl border-0"
             style={{ borderBottomLeftRadius: "1rem", borderBottomRightRadius: "1rem" }}

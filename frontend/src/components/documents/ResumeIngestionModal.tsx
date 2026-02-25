@@ -7,8 +7,8 @@ import { resumeIngestion, dismissRecovery } from "@/lib/api";
 
 /** Human-readable pipeline label map. */
 const PIPELINE_LABELS: Record<string, string> = {
-  extraction: "Image Extraction",
-  edi_evaluation: "EDI Evaluation",
+  pageindex: "PageIndex",
+  contextual: "Vector Embeddings",
   graph: "Graph RAG",
 };
 

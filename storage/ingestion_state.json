@@ -1,1 +1,15 @@
-{}
+{
+  "3": {
+    "document_id": 3,
+    "filename": "124.jpg",
+    "file_path": "D:\\U\\ML Research\\Custom_RAG_System\\data\\124.jpg",
+    "pipelines": [
+      "pageindex",
+      "contextual",
+      "graph"
+    ],
+    "completed_pipelines": [],
+    "current_pipeline": "",
+    "status": "queued"
+  }
+}

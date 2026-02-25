@@ -193,8 +193,8 @@ class LogBroadcaster:
         Return a callback function suitable for module ingestion callbacks.
 
         Usage:
-            callback = broadcaster.make_callback("extraction", doc_id=42)
-            extract_image_description(path, callback=callback)
+            callback = broadcaster.make_callback("pageindex", doc_id=42)
+            tree_builder.ingest(path, callback=callback)
         """
         def _cb(message: str):
             self.log(message, module=module, document_id=document_id)

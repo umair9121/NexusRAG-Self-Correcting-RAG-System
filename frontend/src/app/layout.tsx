@@ -4,7 +4,7 @@ import Sidebar from "@/components/layout/Sidebar";
 import Providers from "@/components/providers/Providers";
 
 export const metadata: Metadata = {
-  title: "EDI Guidelines RAG",
+  title: "RAG System & Generation for EDI Guidelines",
   description: "Adaptive retrieval system with PageIndex, Vector, Graph RAG, and CAG",
   icons: {
     icon: "/images/Browser-Tab-Logo.png",

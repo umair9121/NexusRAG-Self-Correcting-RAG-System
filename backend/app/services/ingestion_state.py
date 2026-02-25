@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 STATE_FILE: Path = config.STORAGE_DIR / "ingestion_state.json"
 
 # Pipeline execution order — used to determine "remaining" pipelines on resume
-PIPELINE_ORDER = ["extraction", "edi_evaluation", "graph"]
+PIPELINE_ORDER = ["pageindex", "contextual", "graph"]
 
 
 class _IngestionState:
@@ -34,9 +34,9 @@ class _IngestionState:
         "document_id": int,
         "filename": str,
         "file_path": str,
-        "pipelines": ["extraction", "edi_evaluation", "graph"],  # originally requested
-        "completed_pipelines": ["extraction"],                    # finished successfully
-        "current_pipeline": "edi_evaluation" | "",                # pipeline that was running
+        "pipelines": ["pageindex", "contextual", "graph"],   # originally requested
+        "completed_pipelines": ["pageindex"],                 # finished successfully
+        "current_pipeline": "contextual" | "",                # pipeline that was running
         "status": "queued" | "running" | "done" | "error" | "cancelled",
     }
     """

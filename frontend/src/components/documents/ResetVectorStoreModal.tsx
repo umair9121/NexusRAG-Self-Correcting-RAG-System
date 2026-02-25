@@ -108,8 +108,7 @@ export default function ResetVectorStoreModal({
             </div>
 
             <p className="text-xs text-[var(--text-secondary)] mb-4 leading-relaxed">
-              Use this when switching embedding models (e.g. from <code className="px-1 py-0.5 bg-[var(--bg-tertiary)] rounded text-[var(--text-primary)]">nomic-embed-text</code> to{" "}
-              <code className="px-1 py-0.5 bg-[var(--bg-tertiary)] rounded text-[var(--text-primary)]">qwen3-embedding:4b</code>).
+              Use this when switching embedding models (e.g. from <code className="px-1 py-0.5 bg-[var(--bg-tertiary)] rounded text-[var(--text-primary)]">qwen3-vl-embedding:8b-q4_k_m</code> to another).
               After resetting, re-ingest your documents to rebuild embeddings with the new model.
             </p>
 

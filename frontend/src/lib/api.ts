@@ -33,11 +33,13 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 import type {
   Document,
+  DocumentFacets,
   DocumentListResponse,
   QueryRequest,
   QueryResponse,
   ChatSession,
   ChatMessage,
+  Workspace,
   SystemHealth,
   IngestionStatus,
   RecoveryResponse,
@@ -46,12 +48,18 @@ import type {
 /** Response from listDocuments; when backend is unreachable (404) we return empty and set backendUnavailable. */
 export type ListDocumentsResult = DocumentListResponse & { backendUnavailable?: boolean };
 
+export type DocumentSortBy = "name" | "created_at" | "page_count" | "status" | "chunk_count" | "ingestion_duration";
+export type DocumentSortOrder = "asc" | "desc";
+
 export async function listDocuments(params: {
   page?: number;
   page_size?: number;
   search?: string;
   status?: string;
   tag?: string;
+  needs_ingestion?: boolean;
+  sort_by?: DocumentSortBy;
+  sort_order?: DocumentSortOrder;
 }): Promise<ListDocumentsResult> {
   const qs = new URLSearchParams();
   if (params.page) qs.set("page", String(params.page));
@@ -59,6 +67,9 @@ export async function listDocuments(params: {
   if (params.search) qs.set("search", params.search);
   if (params.status) qs.set("status", params.status);
   if (params.tag) qs.set("tag", params.tag);
+  if (params.needs_ingestion === true) qs.set("needs_ingestion", "true");
+  if (params.sort_by) qs.set("sort_by", params.sort_by);
+  if (params.sort_order) qs.set("sort_order", params.sort_order);
   try {
     return await request<DocumentListResponse>(`/api/documents?${qs}`);
   } catch (e) {
@@ -81,21 +92,37 @@ export async function listDocumentIds(params: {
   search?: string;
   status?: string;
   tag?: string;
+  needs_ingestion?: boolean;
   limit?: number;
 }): Promise<{ ids: number[] }> {
   const qs = new URLSearchParams();
   if (params.search) qs.set("search", params.search);
   if (params.status) qs.set("status", params.status);
   if (params.tag) qs.set("tag", params.tag);
+  if (params.needs_ingestion === true) qs.set("needs_ingestion", "true");
   if (params.limit != null) qs.set("limit", String(params.limit));
   return request<{ ids: number[] }>(`/api/documents/ids?${qs}`);
+}
+
+/** Fetch document counts by status, by tag, and needs_ingestion_count for filter UI. */
+export async function getDocumentFacets(params?: {
+  search?: string;
+  status?: string;
+  tag?: string;
+}): Promise<DocumentFacets> {
+  const qs = new URLSearchParams();
+  if (params?.search) qs.set("search", params.search);
+  if (params?.status) qs.set("status", params.status);
+  if (params?.tag) qs.set("tag", params.tag);
+  const suffix = qs.toString() ? `?${qs}` : "";
+  return request<DocumentFacets>(`/api/documents/facets${suffix}`);
 }
 
 export async function getDocument(id: number): Promise<Document> {
   return request<Document>(`/api/documents/${id}`);
 }
 
-/** Fetch all storage-layer metadata JSON for a document (extraction, edi_evaluation, graph, communities). */
+/** Fetch all storage-layer metadata JSON for a document (pageindex, graph, communities, docstore). */
 export async function getDocumentMetadata(id: number): Promise<Record<string, unknown>> {
   return request<Record<string, unknown>>(`/api/documents/${id}/metadata`);
 }
@@ -135,7 +162,7 @@ export async function importFolderFromPath(serverPath: string): Promise<Document
 
 export async function updateDocument(
   id: number,
-  data: { tags?: string[]; notes?: string },
+  data: { tags?: string[]; path_hierarchy?: string[]; notes?: string },
 ): Promise<Document> {
   return request<Document>(`/api/documents/${id}`, {
     method: "PATCH",
@@ -172,10 +199,11 @@ export async function bulkDeleteDocuments(ids: number[]): Promise<{ deleted: num
 
 /** Metadata keys that can be selectively deleted (match backend METADATA_KEYS). */
 export const METADATA_KEYS = [
-  "extraction",
-  "edi_evaluation",
+  "pageindex",
   "graph",
   "communities",
+  "chroma",
+  "docstore",
   "figures",
 ] as const;
 
@@ -200,7 +228,7 @@ export async function deleteDocumentMetadata(
 
 export async function startIngestion(
   documentIds: number[],
-  pipelines: string[] = ["extraction", "edi_evaluation", "graph"],
+  pipelines: string[] = ["pageindex", "contextual", "graph"],
   options?: { onlyFailed?: boolean },
 ): Promise<unknown> {
   return request("/api/ingestion/start", {
@@ -296,21 +324,168 @@ export async function getChatSessionState(): Promise<ChatSessionState> {
   return request<ChatSessionState>("/api/chat/session-state");
 }
 
+export interface ChatMessageOptions {
+  force_route?: string | null;
+  temperature?: number;
+  model?: string | null;
+  fast_response?: boolean;
+  enable_vector?: boolean;
+  enable_taxonomy?: boolean;
+  enable_pageindex?: boolean;
+  enable_graph?: boolean;
+}
+
 export async function sendChatMessage(
   sessionId: number,
   content: string,
-  forceRoute?: string | null,
-  temperature?: number,
-  model?: string | null,
+  options?: ChatMessageOptions,
 ): Promise<ChatMessage> {
+  const {
+    force_route: forceRoute,
+    temperature,
+    model,
+    fast_response: fastResponse,
+    enable_vector: enableVector,
+    enable_taxonomy: enableTaxonomy,
+    enable_pageindex: enablePageIndex,
+    enable_graph: enableGraph,
+  } = options ?? {};
   return request<ChatMessage>(`/api/chat/sessions/${sessionId}/message`, {
     method: "POST",
-    body: JSON.stringify({ content, force_route: forceRoute, temperature, model: model ?? undefined }),
+    body: JSON.stringify({
+      content,
+      force_route: forceRoute ?? undefined,
+      temperature,
+      model: model ?? undefined,
+      fast_response: fastResponse ?? false,
+      enable_vector: enableVector ?? true,
+      enable_taxonomy: enableTaxonomy ?? true,
+      enable_pageindex: enablePageIndex ?? true,
+      enable_graph: enableGraph ?? true,
+    }),
+  });
+}
+
+export async function setChatPreference(
+  sessionId: number,
+  optionText: string,
+  accepted: boolean,
+): Promise<{ detail: string }> {
+  return request<{ detail: string }>(`/api/chat/sessions/${sessionId}/preference`, {
+    method: "POST",
+    body: JSON.stringify({ option_text: optionText, accepted }),
+  });
+}
+
+export async function updateChatSession(id: number, title: string): Promise<ChatSession> {
+  return request<ChatSession>(`/api/chat/sessions/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ title: title.trim() || "New Chat" }),
   });
 }
 
 export async function deleteChatSession(id: number): Promise<void> {
   await request(`/api/chat/sessions/${id}`, { method: "DELETE" });
+}
+
+// ── Workspaces ──────────────────────────────────────────────────────────────
+
+export async function listWorkspaces(): Promise<Workspace[]> {
+  return request<Workspace[]>("/api/workspaces");
+}
+
+export async function createWorkspace(name?: string): Promise<Workspace> {
+  return request<Workspace>("/api/workspaces", {
+    method: "POST",
+    body: JSON.stringify({ name: name || "New Workspace" }),
+  });
+}
+
+export async function updateWorkspace(id: number, name: string): Promise<Workspace> {
+  return request<Workspace>(`/api/workspaces/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function deleteWorkspace(id: number): Promise<void> {
+  await request(`/api/workspaces/${id}`, { method: "DELETE" });
+}
+
+export async function listWorkspaceSessions(workspaceId: number): Promise<ChatSession[]> {
+  return request<ChatSession[]>(`/api/workspaces/${workspaceId}/sessions`);
+}
+
+export async function createWorkspaceSession(
+  workspaceId: number,
+  title?: string,
+  documentId?: number,
+): Promise<ChatSession> {
+  return request<ChatSession>(`/api/workspaces/${workspaceId}/sessions`, {
+    method: "POST",
+    body: JSON.stringify({
+      title: title || "New Chat",
+      document_id: documentId || null,
+      workspace_id: workspaceId,
+    }),
+  });
+}
+
+export async function getWorkspaceMessages(sessionId: number): Promise<ChatMessage[]> {
+  return request<ChatMessage[]>(`/api/workspaces/sessions/${sessionId}/messages`);
+}
+
+export async function setWorkspacePreference(
+  sessionId: number,
+  optionText: string,
+  accepted: boolean,
+): Promise<{ detail: string }> {
+  return request<{ detail: string }>(`/api/workspaces/sessions/${sessionId}/preference`, {
+    method: "POST",
+    body: JSON.stringify({ option_text: optionText, accepted }),
+  });
+}
+
+export async function sendWorkspaceMessage(
+  sessionId: number,
+  content: string,
+  options?: ChatMessageOptions,
+): Promise<ChatMessage> {
+  const {
+    force_route: forceRoute,
+    temperature,
+    model,
+    fast_response: fastResponse,
+    enable_vector: enableVector,
+    enable_taxonomy: enableTaxonomy,
+    enable_pageindex: enablePageIndex,
+    enable_graph: enableGraph,
+  } = options ?? {};
+  return request<ChatMessage>(`/api/workspaces/sessions/${sessionId}/message`, {
+    method: "POST",
+    body: JSON.stringify({
+      content,
+      force_route: forceRoute ?? undefined,
+      temperature,
+      model: model ?? undefined,
+      fast_response: fastResponse ?? false,
+      enable_vector: enableVector ?? true,
+      enable_taxonomy: enableTaxonomy ?? true,
+      enable_pageindex: enablePageIndex ?? true,
+      enable_graph: enableGraph ?? true,
+    }),
+  });
+}
+
+export async function updateWorkspaceSession(sessionId: number, title: string): Promise<ChatSession> {
+  return request<ChatSession>(`/api/workspaces/sessions/${sessionId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ title: title.trim() || "New Chat" }),
+  });
+}
+
+export async function deleteWorkspaceSession(sessionId: number): Promise<void> {
+  await request(`/api/workspaces/sessions/${sessionId}`, { method: "DELETE" });
 }
 
 // ── System ─────────────────────────────────────────────────────────────────
@@ -319,7 +494,19 @@ export async function getSystemHealth(): Promise<SystemHealth> {
   return request<SystemHealth>("/api/system/health");
 }
 
-// Vector store reset removed — no longer using vector embeddings
+export interface ResetVectorStoreResponse {
+  success: boolean;
+  chroma_reset: boolean;
+  docstore_entries_cleared: number;
+  documents_reset: number;
+  message: string;
+}
+
+export async function resetVectorStore(): Promise<ResetVectorStoreResponse> {
+  return request<ResetVectorStoreResponse>("/api/system/reset-vector-store", {
+    method: "POST",
+  });
+}
 
 // ── CAG ────────────────────────────────────────────────────────────────────
 
@@ -337,7 +524,13 @@ export async function getCAGStatus(): Promise<Record<string, unknown>> {
 
 // ── Hardware & Performance Options ──────────────────────────────────────
 
-import type { HardwareProfile, PerformanceOptionsResponse } from "./types";
+import type {
+  HardwareProfile,
+  PerformanceOptionsResponse,
+  KnowledgeBaseStats,
+  KnowledgeBaseRefreshResult,
+  KnowledgeBaseEntity,
+} from "./types";
 
 export async function getHardwareProfile(): Promise<HardwareProfile> {
   return request<HardwareProfile>("/api/hardware/profile");
@@ -355,4 +548,29 @@ export async function updatePerformanceOption(
     method: "PATCH",
     body: JSON.stringify({ key, enabled }),
   });
+}
+
+// ── Knowledge Base ─────────────────────────────────────────────────────
+
+export async function getKnowledgeBaseStats(): Promise<KnowledgeBaseStats> {
+  return request<KnowledgeBaseStats>("/api/system/knowledge-base/stats");
+}
+
+export async function refreshKnowledgeBase(model?: string): Promise<KnowledgeBaseRefreshResult> {
+  return request<KnowledgeBaseRefreshResult>("/api/system/knowledge-base/refresh", {
+    method: "POST",
+    body: model && model.trim() ? JSON.stringify({ model: model.trim() }) : undefined,
+  });
+}
+
+export async function listKnowledgeBaseEntities(params?: {
+  entity_type?: string;
+  search?: string;
+  limit?: number;
+}): Promise<{ entities: KnowledgeBaseEntity[] }> {
+  const qs = new URLSearchParams();
+  if (params?.entity_type) qs.set("entity_type", params.entity_type);
+  if (params?.search) qs.set("search", params.search);
+  if (params?.limit) qs.set("limit", String(params.limit));
+  return request<{ entities: KnowledgeBaseEntity[] }>(`/api/system/knowledge-base/entities?${qs}`);
 }

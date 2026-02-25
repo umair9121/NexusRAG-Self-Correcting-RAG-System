@@ -5,16 +5,20 @@ export interface Document {
   page_count: number;
   status: "uploaded" | "ingesting" | "ready" | "error";
   tags: string[];
+  /** Ordered path segments (e.g. vessel → category → folder) for hierarchy/breadcrumbs. */
+  path_hierarchy?: string[];
   notes: string;
   created_at: string;
   updated_at: string;
-  extraction_status: string;
-  edi_status: string;
+  pageindex_status: string;
+  contextual_status: string;
   graph_status: string;
+  chunk_count: number;
   node_count: number;
   edge_count: number;
-  edi_rating: string;
   error_message: string;
+  /** Seconds to complete all 3 pipelines; null if ingestion never completed. */
+  ingestion_duration_seconds?: number | null;
 }
 
 export interface DocumentListResponse {
@@ -22,6 +26,13 @@ export interface DocumentListResponse {
   total: number;
   page: number;
   page_size: number;
+}
+
+/** Counts by status, by tag, and needs_ingestion for filter UI. */
+export interface DocumentFacets {
+  by_status: Record<string, number>;
+  by_tag: Record<string, number>;
+  needs_ingestion_count: number;
 }
 
 export interface QueryRequest {
@@ -44,8 +55,28 @@ export interface ChatSession {
   id: number;
   title: string;
   document_id: number | null;
+  workspace_id?: number | null;
   created_at: string;
   message_count: number;
+}
+
+export interface Workspace {
+  id: number;
+  name: string;
+  workspace_cache: string;
+  created_at: string;
+  updated_at: string;
+  last_used_at: string;
+  chat_count: number;
+}
+
+/** A document reference cited in a chat response (from RAG metadata). */
+export interface SourceReference {
+  document_id: number;
+  filename: string;
+  pages?: number[];
+  primary_page?: number;
+  snippet?: string | null;
 }
 
 export interface ChatMessage {
@@ -54,6 +85,10 @@ export interface ChatMessage {
   trace: string[];
   metadata: Record<string, unknown>;
   route: string;
+  /** When the message was sent (ISO 8601, second precision). */
+  sent_at?: string | null;
+  /** When the assistant response was received (assistant messages only). */
+  response_received_at?: string | null;
 }
 
 export interface SystemHealth {
@@ -63,8 +98,11 @@ export interface SystemHealth {
   total_documents: number;
   documents_ready: number;
   documents_ingesting: number;
+  pageindex_trees: string[];
   knowledge_graphs: string[];
   cag_status: Record<string, unknown>;
+  /** When > 0, suggest skipping Graph for docs with page_count >= this. */
+  graph_skip_page_threshold?: number;
 }
 
 export interface IngestionJobInfo {
@@ -151,4 +189,36 @@ export interface PerformanceOption {
 export interface PerformanceOptionsResponse {
   categories: Record<string, PerformanceOption[]>;
   hardware: HardwareProfile;
+}
+
+// ── Knowledge Base ────────────────────────────────────────────────────
+
+export interface KnowledgeBaseEntity {
+  name: string;
+  types: string[];
+  description: string;
+  mentions: number;
+  documents: string[];
+}
+
+export interface KnowledgeBaseStats {
+  entity_count: number;
+  relation_count: number;
+  document_count: number;
+  last_updated: string | null;
+  types: Record<string, number>;
+  top_entities: { name: string; mentions: number; types: string[] }[];
+  /** Default model for entity classification (e.g. phi3:3.8b). */
+  default_classification_model?: string;
+}
+
+export interface KnowledgeBaseRefreshResult {
+  success: boolean;
+  documents_processed: number;
+  total_entities: number;
+  total_relations: number;
+  newly_classified: number;
+  message: string;
+  /** Model used for entity classification this run. */
+  model_used?: string;
 }

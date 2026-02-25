@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { FileText, MessageSquare, Activity, Search, SlidersHorizontal, Cpu, HardDrive } from "lucide-react";
+import { FileText, MessageSquare, Activity, Search, SlidersHorizontal, Cpu, HardDrive, FolderKanban } from "lucide-react";
 import { useEffect, useState } from "react";
 import { getSystemHealth } from "@/lib/api";
 import type { SystemHealth } from "@/lib/types";
@@ -11,6 +11,7 @@ import type { SystemHealth } from "@/lib/types";
 const NAV_ITEMS = [
   { href: "/", label: "Documents", icon: FileText },
   { href: "/chat", label: "Chat", icon: MessageSquare },
+  { href: "/workspaces", label: "Workspaces", icon: FolderKanban },
   { href: "/explore", label: "Explore", icon: Search },
   { href: "/logs", label: "Logs", icon: Activity },
   { href: "/options", label: "Options", icon: SlidersHorizontal },
@@ -43,7 +44,7 @@ export default function Sidebar() {
           <div className="relative w-full h-12">
             <Image
               src="/images/Logo.png"
-              alt="EDI RAG Retrieval System"
+              alt=" RAG System & Generation for EDI Guidelines"
               fill
               className="object-contain object-left"
               onError={() => setLogoError(true)}
@@ -52,7 +53,7 @@ export default function Sidebar() {
           </div>
         ) : null}
         <h1 className={`text-lg font-bold text-[var(--text-primary)] ${!logoError ? "mt-2" : ""}`}>
-          EDI RAG Retrieval System
+          RAG System & Generation for EDI Guidelines
         </h1>
         <p className="text-xs text-[var(--text-secondary)] mt-0.5">Adaptive Retrieval System</p>
       </div>

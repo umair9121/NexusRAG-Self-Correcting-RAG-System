@@ -13,6 +13,8 @@ const STEP_COLORS: Record<string, string> = {
   grader: "border-l-orange-500",
   error: "border-l-red-500",
   generator: "border-l-purple-500",
+  pageindex: "border-l-green-500",
+  vector: "border-l-cyan-500",
   graph: "border-l-amber-500",
   cag: "border-l-pink-500",
   rewriter: "border-l-yellow-500",

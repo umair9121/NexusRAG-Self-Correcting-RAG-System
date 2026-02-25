@@ -4,14 +4,11 @@ SQLite database setup with async SQLAlchemy.
 
 from __future__ import annotations
 
-import logging
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
 from app.config import DATABASE_PATH
-
-logger = logging.getLogger(__name__)
 
 DATABASE_URL = f"sqlite+aiosqlite:///{DATABASE_PATH}"
 
@@ -23,58 +20,78 @@ class Base(DeclarativeBase):
     pass
 
 
-async def _migrate_schema(conn) -> None:
-    """
-    Handle schema migration from old pipeline columns to new ones.
-    Adds new columns if they don't exist and migrates data from old columns.
-    """
-    # Check if old columns exist
-    result = await conn.execute(text("PRAGMA table_info(documents)"))
-    columns = {row[1] for row in result.fetchall()}
-
-    migrations_needed = "pageindex_status" in columns and "extraction_status" not in columns
-
-    if migrations_needed:
-        logger.info("Migrating database schema: old pipeline columns -> new pipeline columns")
-
-        # Add new columns
-        for col, default in [
-            ("extraction_status", "'pending'"),
-            ("edi_status", "'pending'"),
-            ("edi_rating", "''"),
-        ]:
-            if col not in columns:
-                await conn.execute(text(f"ALTER TABLE documents ADD COLUMN {col} VARCHAR(32) DEFAULT {default}"))
-                logger.info("  Added column: %s", col)
-
-        # Remove chunk_count if it exists (no longer needed) - SQLite doesn't support DROP COLUMN in older versions
-        # so we just leave it as-is; it won't be used
-
-        logger.info("Schema migration complete")
-
-    # Also ensure new columns exist even if old columns were already gone (fresh-ish DB)
-    for col, default, col_type in [
-        ("extraction_status", "'pending'", "VARCHAR(32)"),
-        ("edi_status", "'pending'", "VARCHAR(32)"),
-        ("edi_rating", "''", "VARCHAR(32)"),
-    ]:
-        if col not in columns:
-            try:
-                await conn.execute(text(f"ALTER TABLE documents ADD COLUMN {col} {col_type} DEFAULT {default}"))
-                logger.info("Added missing column: %s", col)
-            except Exception:
-                pass  # Column might already exist
-
-
 async def init_db():
-    """Create all tables on startup and handle schema migrations."""
+    """Create all tables on startup and add any missing columns (migrations)."""
     async with engine.begin() as conn:
-        from app.models import Document, ChatSession  # noqa: F401
+        from app.models import ChatSession, Document, Workspace  # noqa: F401
         await conn.run_sync(Base.metadata.create_all)
 
-    # Run migrations after table creation
+    # Add ingestion_duration_seconds if missing (e.g. existing DBs created before this column)
     async with engine.begin() as conn:
-        await _migrate_schema(conn)
+        def _add_ingestion_duration_if_missing(sync_conn):
+            cur = sync_conn.execute(
+                text("SELECT 1 FROM pragma_table_info('documents') WHERE name = 'ingestion_duration_seconds'")
+            )
+            if cur.fetchone() is None:
+                sync_conn.execute(text("ALTER TABLE documents ADD COLUMN ingestion_duration_seconds INTEGER NULL"))
+
+        await conn.run_sync(_add_ingestion_duration_if_missing)
+
+    # Add path_hierarchy if missing (for existing DBs).
+    async with engine.begin() as conn:
+        def _add_path_hierarchy_if_missing(sync_conn):
+            cur = sync_conn.execute(
+                text("SELECT 1 FROM pragma_table_info('documents') WHERE name = 'path_hierarchy'")
+            )
+            if cur.fetchone() is None:
+                sync_conn.execute(text("ALTER TABLE documents ADD COLUMN path_hierarchy TEXT DEFAULT '[]'"))
+
+        await conn.run_sync(_add_path_hierarchy_if_missing)
+
+    # Add workspace columns if missing (for existing DBs).
+    async with engine.begin() as conn:
+        def _add_workspace_columns_if_missing(sync_conn):
+            cur_workspace_id = sync_conn.execute(
+                text("SELECT 1 FROM pragma_table_info('chat_sessions') WHERE name = 'workspace_id'")
+            )
+            if cur_workspace_id.fetchone() is None:
+                sync_conn.execute(text("ALTER TABLE chat_sessions ADD COLUMN workspace_id INTEGER NULL"))
+
+            cur_session_cache = sync_conn.execute(
+                text("SELECT 1 FROM pragma_table_info('chat_sessions') WHERE name = 'session_cache'")
+            )
+            if cur_session_cache.fetchone() is None:
+                sync_conn.execute(text("ALTER TABLE chat_sessions ADD COLUMN session_cache TEXT DEFAULT ''"))
+
+            cur_workspace_cache = sync_conn.execute(
+                text("SELECT 1 FROM pragma_table_info('workspaces') WHERE name = 'workspace_cache'")
+            )
+            if cur_workspace_cache.fetchone() is None:
+                sync_conn.execute(text("ALTER TABLE workspaces ADD COLUMN workspace_cache TEXT DEFAULT ''"))
+
+            cur_last_used = sync_conn.execute(
+                text("SELECT 1 FROM pragma_table_info('workspaces') WHERE name = 'last_used_at'")
+            )
+            if cur_last_used.fetchone() is None:
+                sync_conn.execute(text("ALTER TABLE workspaces ADD COLUMN last_used_at DATETIME"))
+
+        await conn.run_sync(_add_workspace_columns_if_missing)
+
+    # Add UI audit / screenshot columns if missing (for existing DBs).
+    async with engine.begin() as conn:
+        def _add_audit_columns_if_missing(sync_conn):
+            cur_ingestion_type = sync_conn.execute(
+                text("SELECT 1 FROM pragma_table_info('documents') WHERE name = 'ingestion_type'")
+            )
+            if cur_ingestion_type.fetchone() is None:
+                sync_conn.execute(text("ALTER TABLE documents ADD COLUMN ingestion_type TEXT DEFAULT 'document'"))
+            cur_audit_result = sync_conn.execute(
+                text("SELECT 1 FROM pragma_table_info('documents') WHERE name = 'audit_result'")
+            )
+            if cur_audit_result.fetchone() is None:
+                sync_conn.execute(text("ALTER TABLE documents ADD COLUMN audit_result TEXT NULL"))
+
+        await conn.run_sync(_add_audit_columns_if_missing)
 
 
 async def get_db() -> AsyncSession:

@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Loader2,
   AlertCircle,
+  Database,
   GitBranch,
   Network,
   FileText,
@@ -16,9 +17,9 @@ import {
   ExternalLink,
   GripVertical,
   Columns,
-  Shield,
+  Layers,
 } from "lucide-react";
-import { getDocumentMetadata, getDocumentPdfUrl } from "@/lib/api";
+import { getDocumentMetadata, getDocumentFileUrl, getDocumentPdfUrl } from "@/lib/api";
 
 /* ═══════════════════════════════════════════════════════════════════
    Props
@@ -29,6 +30,8 @@ interface SideBySideViewerProps {
   docName: string;
   open: boolean;
   onClose: () => void;
+  /** Optional 1-based page to open (PDF; appends #page=N to URL where supported). */
+  initialPage?: number;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -41,8 +44,9 @@ const TAB_CONFIG: {
   icon: React.ReactNode;
   description: string;
 }[] = [
-  { key: "extraction", label: "Image Extraction", icon: <FileText size={14} />, description: "VLM-generated image description and metadata" },
-  { key: "edi_evaluation", label: "EDI Evaluation", icon: <Shield size={14} />, description: "EDI compliance assessment results" },
+  { key: "pageindex", label: "Page Index", icon: <FileText size={14} />, description: "Hierarchical section tree with summaries" },
+  { key: "docstore", label: "Doc Store", icon: <Database size={14} />, description: "Text chunks with contextual metadata" },
+  { key: "chroma", label: "Vector Embeddings", icon: <Layers size={14} />, description: "ChromaDB vectors for this document" },
   { key: "graph", label: "Knowledge Graph", icon: <GitBranch size={14} />, description: "Entity-relationship graph structure" },
   { key: "communities", label: "Communities", icon: <Network size={14} />, description: "Graph community partitions and summaries" },
 ];
@@ -211,10 +215,75 @@ function ResizeDivider({ onDrag }: { onDrag: (deltaX: number) => void }) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+   Document view type (for left panel: PDF, image, excel, or iframe-other)
+   ═══════════════════════════════════════════════════════════════════ */
+
+type ViewDocType = "pdf" | "image" | "excel" | "other";
+
+function getViewDocType(filename: string): ViewDocType {
+  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+  if (ext === "pdf") return "pdf";
+  if (["xls", "xlsx", "csv"].includes(ext)) return "excel";
+  if (["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "tiff", "tif"].includes(ext)) return "image";
+  return "other";
+}
+
+const VIEW_TYPE_LABELS: Record<ViewDocType, string> = {
+  pdf: "Original PDF",
+  image: "Original Image",
+  excel: "Original Spreadsheet",
+  other: "Original Document",
+};
+
+function isCsv(filename: string): boolean {
+  return filename.toLowerCase().endsWith(".csv");
+}
+
+/** Parse a single CSV line respecting quoted fields (e.g. "a,b",c). */
+function parseCsvLine(line: string): string[] {
+  const result: string[] = [];
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] === '"') {
+      i++;
+      let field = "";
+      while (i < line.length) {
+        if (line[i] === '"') {
+          i++;
+          if (line[i] === '"') {
+            field += '"';
+            i++;
+          } else break;
+        } else {
+          field += line[i];
+          i++;
+        }
+      }
+      result.push(field);
+      if (line[i] === ",") i++;
+    } else {
+      let field = "";
+      while (i < line.length && line[i] !== ",") {
+        field += line[i];
+        i++;
+      }
+      result.push(field.trim());
+      if (line[i] === ",") i++;
+    }
+  }
+  return result;
+}
+
+function parseCsv(text: string): string[][] {
+  const lines = text.split(/\r?\n/).filter((line) => line.length > 0);
+  return lines.map((line) => parseCsvLine(line));
+}
+
+/* ═══════════════════════════════════════════════════════════════════
    Main component
    ═══════════════════════════════════════════════════════════════════ */
 
-export default function SideBySideViewer({ docId, docName, open, onClose }: SideBySideViewerProps) {
+export default function SideBySideViewer({ docId, docName, open, onClose, initialPage }: SideBySideViewerProps) {
   // Metadata state
   const [metadata, setMetadata] = useState<Record<string, unknown> | null>(null);
   const [metaLoading, setMetaLoading] = useState(false);
@@ -222,9 +291,18 @@ export default function SideBySideViewer({ docId, docName, open, onClose }: Side
   const [activeTab, setActiveTab] = useState<string>("");
   const [viewMode, setViewMode] = useState<"tree" | "raw">("tree");
 
-  // PDF state
-  const [pdfLoading, setPdfLoading] = useState(true);
-  const pdfUrl = getDocumentPdfUrl(docId);
+  // Document file state (PDF, image, Excel, or other)
+  const [fileLoading, setFileLoading] = useState(true);
+  const [csvData, setCsvData] = useState<string[][] | null>(null);
+  const [csvError, setCsvError] = useState<string | null>(null);
+  const viewDocType = getViewDocType(docName);
+  const baseFileUrl = viewDocType === "pdf" ? getDocumentPdfUrl(docId) : getDocumentFileUrl(docId);
+  const fileUrl =
+    viewDocType === "pdf" && initialPage != null && initialPage > 0
+      ? `${baseFileUrl}#page=${initialPage}`
+      : baseFileUrl;
+  const leftPanelLabel = VIEW_TYPE_LABELS[viewDocType];
+  const showCsvTable = isCsv(docName);
 
   // Layout state  –  percentage of container width allocated to PDF (left panel)
   const [splitPercent, setSplitPercent] = useState(50);
@@ -245,7 +323,7 @@ export default function SideBySideViewer({ docId, docName, open, onClose }: Side
     setMetaLoading(true);
     setMetaError(null);
     setMetadata(null);
-    setPdfLoading(true);
+    setFileLoading(true);
     getDocumentMetadata(docId)
       .then((data) => {
         setMetadata(data);
@@ -262,6 +340,26 @@ export default function SideBySideViewer({ docId, docName, open, onClose }: Side
       })
       .finally(() => setMetaLoading(false));
   }, [open, docId]);
+
+  // Fetch CSV content for inline table view (avoids browser download)
+  useEffect(() => {
+    if (!open || !showCsvTable) return;
+    setFileLoading(true);
+    setCsvError(null);
+    setCsvData(null);
+    fetch(fileUrl)
+      .then((res) => {
+        if (!res.ok) throw new Error(res.statusText);
+        return res.text();
+      })
+      .then((text) => {
+        setCsvData(parseCsv(text));
+      })
+      .catch((err) => {
+        setCsvError(err instanceof Error ? err.message : "Failed to load CSV");
+      })
+      .finally(() => setFileLoading(false));
+  }, [open, fileUrl, showCsvTable]);
 
   // Handle resize via divider drag
   const handleDrag = useCallback((deltaX: number) => {
@@ -370,10 +468,10 @@ export default function SideBySideViewer({ docId, docName, open, onClose }: Side
                   <polyline points="14 2 14 8 20 8" />
                 </svg>
               </div>
-              <span className="text-xs font-semibold text-[var(--text-primary)]">Original PDF</span>
+              <span className="text-xs font-semibold text-[var(--text-primary)]">{leftPanelLabel}</span>
               <div className="flex-1" />
               <a
-                href={pdfUrl}
+                href={fileUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="p-1 rounded hover:bg-white/5 transition-all"
@@ -382,36 +480,81 @@ export default function SideBySideViewer({ docId, docName, open, onClose }: Side
                 <ExternalLink size={12} className="text-[var(--text-secondary)]" />
               </a>
               <a
-                href={pdfUrl}
+                href={fileUrl}
                 download={docName}
                 className="p-1 rounded hover:bg-white/5 transition-all"
-                title="Download PDF"
+                title="Download"
               >
                 <Download size={12} className="text-[var(--text-secondary)]" />
               </a>
             </div>
 
-            {/* PDF iframe */}
+            {/* Document preview: image uses <img>, others use iframe */}
             <div
-              className="flex-1 relative min-h-0"
+              className="flex-1 relative min-h-0 flex items-center justify-center overflow-auto"
               style={{
                 background: "radial-gradient(ellipse at center, rgba(30,30,45,0.5) 0%, rgba(10,10,15,1) 70%)",
               }}
             >
-              {pdfLoading && (
+              {fileLoading && (
                 <div className="absolute inset-0 flex items-center justify-center z-10">
                   <div className="flex flex-col items-center gap-3" style={{ background: "linear-gradient(135deg, rgba(99,102,241,0.15) 0%, rgba(99,102,241,0.05) 100%)", border: "1px solid rgba(99,102,241,0.15)", borderRadius: "1rem", padding: "1.5rem" }}>
                     <Loader2 size={22} className="animate-spin text-indigo-400" />
-                    <span className="text-sm text-[var(--text-secondary)]">Loading PDF...</span>
+                    <span className="text-sm text-[var(--text-secondary)]">Loading document...</span>
                   </div>
                 </div>
               )}
-              <iframe
-                src={pdfUrl}
-                title={docName}
-                className="w-full h-full border-0"
-                onLoad={() => setPdfLoading(false)}
-              />
+              {showCsvTable ? (
+                csvError ? (
+                  <div className="p-4 text-center text-[var(--text-secondary)] text-sm">
+                    {csvError}
+                  </div>
+                ) : csvData && csvData.length > 0 ? (
+                  <div className="w-full h-full overflow-auto p-2">
+                    <table className="w-full border-collapse text-xs text-[var(--text-primary)]">
+                      <thead>
+                        <tr className="border-b border-[var(--border)] sticky top-0 bg-[var(--bg-primary)]">
+                          {csvData[0].map((cell, j) => (
+                            <th key={j} className="px-2 py-1.5 text-left font-medium whitespace-nowrap">
+                              {cell}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {csvData.slice(1).map((row, i) => (
+                          <tr key={i} className="border-b border-[var(--border)]/50 hover:bg-[var(--bg-tertiary)]/50">
+                            {row.map((cell, j) => (
+                              <td key={j} className="px-2 py-1 whitespace-nowrap">
+                                {cell}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="p-4 text-center text-[var(--text-secondary)] text-sm">
+                    No data
+                  </div>
+                )
+              ) : viewDocType === "image" ? (
+                <img
+                  src={fileUrl}
+                  alt={docName}
+                  className="max-w-full max-h-full object-contain"
+                  onLoad={() => setFileLoading(false)}
+                  onError={() => setFileLoading(false)}
+                />
+              ) : (
+                <iframe
+                  src={fileUrl}
+                  title={docName}
+                  className="w-full h-full border-0 min-h-0"
+                  onLoad={() => setFileLoading(false)}
+                />
+              )}
             </div>
           </div>
 

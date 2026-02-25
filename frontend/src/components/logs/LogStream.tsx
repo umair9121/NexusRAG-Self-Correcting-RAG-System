@@ -18,8 +18,8 @@ const LEVEL_COLORS: Record<string, string> = {
 };
 
 const MODULE_COLORS: Record<string, string> = {
-  extraction: "text-green-400",
-  edi: "text-cyan-400",
+  pageindex: "text-green-400",
+  contextual: "text-cyan-400",
   graph: "text-amber-400",
   router: "text-blue-400",
   grader: "text-orange-400",

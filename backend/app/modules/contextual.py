@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import uuid
 from pathlib import Path
@@ -16,7 +17,8 @@ import fitz  # PyMuPDF
 from rank_bm25 import BM25Okapi
 
 from app import config
-from app.modules.ollama_client import OllamaClient, AsyncOllamaClient
+from app.modules.ollama_client import OllamaClient, AsyncOllamaClient, _resolve_embedding_model
+from app.modules.chunking import chunk_text_semantic
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +220,7 @@ def chunk_text(
     chunk_size: int = config.CHUNK_SIZE,
     overlap: int = config.CHUNK_OVERLAP,
 ) -> list[dict[str, Any]]:
+    """Fixed-token (word) chunking; used when semantic chunking is disabled or as fallback."""
     words = text.split()
     chunks = []
     start = 0
@@ -233,6 +236,15 @@ def chunk_text(
         })
         start += chunk_size - overlap
     return chunks
+
+
+def chunk_text_adaptive(text: str) -> list[dict[str, Any]]:
+    """Use semantic (structure-aware) chunking when enabled, else fixed-token."""
+    if config.USE_SEMANTIC_CHUNKING:
+        semantic = chunk_text_semantic(text)
+        if semantic:
+            return semantic
+    return chunk_text(text)
 
 
 class ContextualRetriever:
@@ -264,25 +276,45 @@ class ContextualRetriever:
         if n_chroma or n_docstore:
             logger.info("Cleared %d Chroma and %d DocStore entries for %s", n_chroma, n_docstore, doc_name)
         if callback:
-            callback("Chunking document...")
-        chunks = chunk_text(full_text)
+            callback("Chunking document (structure-aware when enabled)...")
+        # When text is contextually flattened PageIndex (one block per leaf with hierarchy),
+        # split by delimiter so each block becomes one chunk (no orphaned child nodes).
+        from_pageindex_flattened = config.PAGEINDEX_FLATTENED_BLOCK_DELIMITER in full_text
+        if from_pageindex_flattened:
+            blocks = [b.strip() for b in full_text.split(config.PAGEINDEX_FLATTENED_BLOCK_DELIMITER) if b.strip()]
+            chunks = [
+                {"id": str(uuid.uuid4())[:12], "text": block, "index": i, "start_char": 0, "end_char": len(block)}
+                for i, block in enumerate(blocks)
+            ]
+        else:
+            chunks = chunk_text_adaptive(full_text)
         if callback:
             callback(f"Created {len(chunks)} chunks. Vector embeddings contextual process...")
         loop = asyncio.new_event_loop()
         try:
             contextualized = loop.run_until_complete(
-                self._contextualize_chunks(chunks, full_text, doc_name, callback)
+                self._contextualize_chunks(chunks, full_text, doc_name, callback, precontextualized=from_pageindex_flattened)
             )
         finally:
             loop.close()
         if callback:
             callback("Generating embeddings and indexing...")
+        # Log context length for embedding (env on backend; num_ctx from Ollama server for the embedding model)
+        embed_model = _resolve_embedding_model(config.EMBEDDING_MODEL)
+        env_ctx = os.environ.get("OLLAMA_CONTEXT_LENGTH", "")
+        num_ctx = self.llm.get_model_num_ctx(embed_model)
+        logger.info(
+            "Embedding context: OLLAMA_CONTEXT_LENGTH (env)=%s, embedding model %s num_ctx=%s",
+            env_ctx or "(unset)",
+            embed_model,
+            num_ctx if num_ctx is not None else "N/A",
+        )
         self._index_chunks(contextualized, doc_name)
         if callback:
             callback(f"Indexed {len(contextualized)} chunks for {doc_name}")
         return len(contextualized)
 
-    async def _contextualize_chunks(self, chunks, full_text, doc_name, callback=None):
+    async def _contextualize_chunks(self, chunks, full_text, doc_name, callback=None, precontextualized: bool = False):
         words = full_text.split()
         results = []
         for i, chunk in enumerate(chunks):
@@ -290,22 +322,27 @@ class ContextualRetriever:
             if _is_placeholder_chunk(chunk["text"]):
                 logger.debug("Skipping placeholder chunk %d (no real content)", i)
                 continue
-            chunk_start_word = chunk["index"] * (config.CHUNK_SIZE - config.CHUNK_OVERLAP)
-            context_start = max(0, chunk_start_word - config.CONTEXT_WINDOW_TOKENS)
-            context_end = min(len(words), chunk_start_word + config.CHUNK_SIZE + config.CONTEXT_WINDOW_TOKENS)
-            surrounding = " ".join(words[context_start:context_end])
-            prompt = (
-                "Describe the context of the following text chunk. "
-                "Who is speaking? What is the main topic? Answer in one sentence.\n\n"
-                f"Surrounding context:\n{surrounding[:2000]}\n\nChunk:\n{chunk['text'][:1500]}"
-            )
-            try:
-                context_desc = await self.async_llm.generate(prompt, options=config.REASONING_OPTIONS)
-                context_desc = context_desc.strip()
-            except Exception as exc:
-                logger.warning("Failed to contextualize chunk %d: %s", i, exc)
+            if precontextualized:
+                # PageIndex flattened blocks already have hierarchy + summary + content; use as-is.
                 context_desc = ""
-            contextualized_text = f"{context_desc} {chunk['text']}" if context_desc else chunk['text']
+                contextualized_text = chunk["text"]
+            else:
+                chunk_start_word = chunk["index"] * (config.CHUNK_SIZE - config.CHUNK_OVERLAP)
+                context_start = max(0, chunk_start_word - config.CONTEXT_WINDOW_TOKENS)
+                context_end = min(len(words), chunk_start_word + config.CHUNK_SIZE + config.CONTEXT_WINDOW_TOKENS)
+                surrounding = " ".join(words[context_start:context_end])
+                prompt = (
+                    "Describe the context of the following text chunk. "
+                    "Who is speaking? What is the main topic? Answer in one sentence.\n\n"
+                    f"Surrounding context:\n{surrounding[:2000]}\n\nChunk:\n{chunk['text'][:1500]}"
+                )
+                try:
+                    context_desc = await self.async_llm.generate(prompt, options=config.REASONING_OPTIONS)
+                    context_desc = context_desc.strip()
+                except Exception as exc:
+                    logger.warning("Failed to contextualize chunk %d: %s", i, exc)
+                    context_desc = ""
+                contextualized_text = f"{context_desc} {chunk['text']}" if context_desc else chunk['text']
             parent_id = str(uuid.uuid4())[:12]
             results.append({
                 "id": parent_id, "contextualized_text": contextualized_text,
@@ -359,7 +396,7 @@ class ContextualRetriever:
                     fallback_dim = len(embs[0])
             except Exception as exc:
                 logger.error("Embedding batch failed: %s", exc)
-                dim = fallback_dim or 2560  # default to qwen3-embedding:4b dim
+                dim = fallback_dim or config.EMBEDDING_DIMENSION
                 all_embs.extend([[0.0] * dim] * len(batch))
         return all_embs
 
@@ -448,7 +485,63 @@ class HybridSearcher:
             doc_texts[doc["id"]] = doc["text"]
             doc_sources.setdefault(doc["id"], []).append("bm25")
         sorted_ids = sorted(rrf_scores, key=lambda d: rrf_scores[d], reverse=True)
-        fused = [{"id": did, "text": doc_texts.get(did, ""), "rrf_score": rrf_scores[did], "sources": doc_sources.get(did, [])} for did in sorted_ids[:top_k]]
+        doc_names: dict[str, str | None] = {}
+        page_numbers: dict[str, int | None] = {}
+        for d in vector_results:
+            doc_names[d["id"]] = (d.get("metadata") or {}).get("doc_name")
+            page_raw = (d.get("metadata") or {}).get("page_number")
+            page_numbers[d["id"]] = page_raw if isinstance(page_raw, int) else None
+        for d in bm25_results:
+            if d["id"] not in doc_names:
+                doc_names[d["id"]] = (d.get("metadata") or {}).get("doc_name")
+            if d["id"] not in page_numbers:
+                page_raw = (d.get("metadata") or {}).get("page_number")
+                page_numbers[d["id"]] = page_raw if isinstance(page_raw, int) else None
+
+        # Optional rerank: send top RERANKER_CANDIDATES to reranker, reorder by relevance_score
+        candidate_count = getattr(config, "RERANKER_CANDIDATES", 20)
+        use_rerank = getattr(config, "RERANKER_ENABLED", False) and len(sorted_ids) > 0
+        if use_rerank:
+            candidates = sorted_ids[: min(len(sorted_ids), candidate_count)]
+            texts = [doc_texts.get(did, "") for did in candidates]
+            try:
+                reranked = self.llm.rerank(query, texts, top_n=top_k)
+            except Exception as e:
+                logger.warning("Rerank failed, using RRF order: %s", e)
+                reranked = None
+            if reranked:
+                # Map (document_text, score) back to candidate ids by matching text (first match wins)
+                used_ids: set[str] = set()
+                reranked_ids: list[str] = []
+                for doc_text, _ in reranked:
+                    for did in candidates:
+                        if did in used_ids:
+                            continue
+                        t = doc_texts.get(did, "")
+                        if t == doc_text or (t and doc_text.startswith(t[:200])) or (doc_text and t.startswith(doc_text[:200])):
+                            used_ids.add(did)
+                            reranked_ids.append(did)
+                            break
+                # Append any candidates not returned by reranker (e.g. API returned fewer than top_n)
+                for did in candidates:
+                    if did not in used_ids:
+                        reranked_ids.append(did)
+                # Final order: reranked first, then rest of original sorted_ids
+                sorted_ids = reranked_ids + [x for x in sorted_ids if x not in set(reranked_ids)]
+                logger.info("Reranker applied: %d candidates -> top %d", len(candidates), top_k)
+
+        fused = []
+        for did in sorted_ids[:top_k]:
+            entry = {
+                "id": did,
+                "text": doc_texts.get(did, ""),
+                "rrf_score": rrf_scores.get(did, 0),
+                "sources": doc_sources.get(did, []),
+                "doc_name": doc_names.get(did),
+                "page_number": page_numbers.get(did),
+            }
+            fused.append(entry)
+
         return {"results": fused, "vector_results": vector_results[:top_k], "bm25_results": bm25_results[:top_k]}
 
     def get_context(self, query: str, top_k: int = config.TOP_K_RESULTS) -> str:

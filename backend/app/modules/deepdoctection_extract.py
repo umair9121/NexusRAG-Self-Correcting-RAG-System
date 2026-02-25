@@ -191,6 +191,49 @@ def extract_text_with_deepdoctection(
         return ""
 
 
+def extract_figure_paths_from_pdf(
+    pdf_path: str | Path,
+    doc_stem: str | None = None,
+    callback: Any | None = None,
+) -> list[str]:
+    """
+    Run layout analysis and extract only figure regions as images; return their paths.
+    Used by the mixed-layout pipeline to caption figures with the VLM without running
+    full deepdoctection OCR. Returns empty list if deepdoctection is not available or fails.
+    """
+    pdf_path = Path(pdf_path)
+    if not pdf_path.exists() or pdf_path.suffix.lower() != ".pdf":
+        return []
+    if not _deepdoctection_available():
+        return []
+    doc_stem = (doc_stem or pdf_path.stem).replace("\\", "_").replace("/", "_").strip() or "document"
+    all_paths: list[str] = []
+    try:
+        import deepdoctection as dd
+
+        if callback:
+            callback("Extracting figure regions (layout only)…")
+        analyzer = dd.get_dd_analyzer()
+        df = analyzer.analyze(path=str(pdf_path))
+        if hasattr(df, "reset_state"):
+            df.reset_state()
+        page_index = 0
+        for dp in df:
+            if dp is None:
+                page_index += 1
+                continue
+            paths = _extract_figures_from_dp(dp, doc_stem, page_index, callback)
+            all_paths.extend(paths)
+            page_index += 1
+        if callback and all_paths:
+            callback(f"Extracted {len(all_paths)} figure image(s)")
+    except Exception as e:
+        logger.warning("extract_figure_paths_from_pdf failed for %s: %s", pdf_path.name, e)
+        if callback:
+            callback(f"Figure extraction failed: {e}")
+    return all_paths
+
+
 def is_pageindex_empty(pageindex_json_path: str | Path) -> bool:
     """Return True if the PageIndex JSON has root title 'Empty Document'."""
     import json

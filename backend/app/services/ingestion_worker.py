@@ -1,11 +1,6 @@
 """
 Background ingestion worker using asyncio tasks.
 Processes documents sequentially to respect hardware constraints.
-
-Pipeline order:
-  1. Extraction — VLM-based image description extraction (for image files)
-  2. EDI Evaluation — LLM-based EDI compliance check on extracted description
-  3. Graph RAG — entity extraction, graph building, community summarization
 """
 
 from __future__ import annotations
@@ -13,33 +8,138 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import json
+import uuid
 
 from app import config
 from app.database import async_session
 from app.logger import broadcaster
 from app.models import Document
 from app.modules.ollama_client import OllamaClient
-from app.modules.graph import GraphBuilder
-from app.modules.image_extraction import (
-    extract_image_description,
-    is_image_file,
-    save_extraction,
-    load_extraction,
+from app.modules.pageindex import TreeBuilder, minimal_official_tree
+from app.modules.contextual import ContextualRetriever, extract_text_from_pdf, sanitize_extracted_text
+from app.modules.graph import GraphBuilder, GraphSearcher
+from app.modules.knowledge_base import get_knowledge_base
+from app.modules.deepdoctection_extract import (
+    extract_text_with_deepdoctection,
+    is_pageindex_empty,
 )
-from app.modules.edi_evaluation import (
-    evaluate_edi_compliance,
-    save_edi_evaluation,
+from app.modules.docling_pipeline import validate_and_fix_headers
+from app.modules.vlm_extract import (
+    extract_text_with_vlm,
+    extract_text_with_vlm_image,
+    extract_screen_object_model,
+    run_ui_compliance_audit,
+    get_per_page_visual_summaries,
+    inject_vlm_summaries_into_ocr_markdown,
+    should_use_vlm_for_sparse_pages,
 )
+from app.modules.pdf_images import extract_pdf_page_images
+from app.modules.pdf_triage import (
+    get_document_route,
+    ROUTE_FAST_PAGEINDEX,
+    ROUTE_OCR_SCANNED,
+    ROUTE_MIXED_LAYOUT,
+    ROUTE_COMPLEX_VISUAL,
+)
+from app.modules.ocr_extract import extract_text_with_fast_ocr
 from app.modules.text_extract import extract_text_from_file
 from app.services.ingestion_state import ingestion_state
 
 logger = logging.getLogger(__name__)
+
+
+def _is_regulatory_document(doc) -> bool:
+    """True if document should be forced into Graph RAG (regulatory/EDI/HIPAA/WCAG)."""
+    tags_raw = (doc.tags or "[]").strip()
+    try:
+        tags = json.loads(tags_raw) if tags_raw else []
+    except (json.JSONDecodeError, TypeError):
+        tags = []
+    tags_lower = [str(t).lower() for t in tags]
+    filename_lower = (getattr(doc, "filename", "") or "").lower()
+    for tag in getattr(config, "REGULATORY_TAGS", []):
+        if tag.lower() in tags_lower or tag.lower() in filename_lower:
+            return True
+    for pattern in getattr(config, "REGULATORY_FILENAME_PATTERNS", []):
+        if pattern.lower() in filename_lower:
+            return True
+    return False
+
+
+def _is_image_only(path: str) -> bool:
+    """True if file is an image (screenshot) for UI/SOM pipeline."""
+    return Path(path).suffix.lower() in getattr(config, "IMAGE_EXTENSIONS", {".png", ".jpg", ".jpeg"})
+
+
+def _load_view_hierarchy_if_present(file_path: str) -> dict | None:
+    """Load optional sidecar JSON (same stem + .view_hierarchy.json or .metadata.json)."""
+    base = Path(file_path)
+    stem = base.stem
+    parent = base.parent
+    for name in (f"{stem}.view_hierarchy.json", f"{stem}.metadata.json", f"{stem}.json"):
+        p = parent / name
+        if p.exists() and p != base:
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except (OSError, json.JSONDecodeError):
+                pass
+    return None
+
+
+def _text_from_pageindex_tree(doc_stem: str) -> str | None:
+    """
+    Build contextually flattened text from PageIndex JSON for graph and vector ingestion.
+    Each leaf is emitted as one block: hierarchy (Document / Section / Subsection) + summaries
+    + content, so embeddings and search get full context (no empty-parent or orphaned-child loss).
+    Uses summary in addition to (or instead of) raw text so natural language is indexed.
+    Returns None if missing/empty.
+    """
+    path = config.PAGEINDEX_DIR / f"{doc_stem}.json"
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            root = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    doc_title = (root.get("title") or doc_stem or "Document").strip()
+    blocks: list[str] = []
+
+    def walk(node: dict, ancestors: list[dict]) -> None:
+        # Official PageIndex uses "nodes"; legacy uses "children"
+        children = node.get("nodes") or node.get("children") or []
+        if not children:
+            # Leaf: build one flattened block with full hierarchy and summaries
+            hierarchy_parts = [f"Document: {doc_title}."]
+            for a in ancestors:
+                if (a.get("title") or "").strip():
+                    hierarchy_parts.append(f"Section ({a.get('level', 0)}): {(a.get('title') or '').strip()}.")
+                if (a.get("summary") or "").strip():
+                    hierarchy_parts.append(f"Summary: {(a.get('summary') or '').strip()}")
+            subsection = (node.get("title") or "").strip()
+            if subsection:
+                hierarchy_parts.append(f"Subsection: {subsection}.")
+            summary = (node.get("summary") or "").strip()
+            # Use summary only for flattened blocks (official PageIndex style); keep text in tree but don't index it (formatting issues).
+            if summary:
+                block = " ".join(hierarchy_parts) + " Content: " + summary
+                blocks.append(block)
+            return
+        for ch in children:
+            walk(ch, ancestors + [node])
+
+    walk(root, [])
+    if not blocks:
+        return None
+    return config.PAGEINDEX_FLATTENED_BLOCK_DELIMITER.join(blocks)
 
 
 @dataclass
@@ -215,9 +315,29 @@ class IngestionWorker:
                 job.error_message = "Document not found in database"
                 return
             doc.status = "ingesting"
+            doc.ingestion_duration_seconds = None  # clear so re-ingestion gets a fresh duration
             await db.commit()
 
-            pipelines_list = [p for p in ["extraction", "edi_evaluation", "graph"] if p in job.pipelines]
+            # Force regulatory documents into Graph RAG pipeline (EDI, WCAG, HIPAA).
+            if _is_regulatory_document(doc):
+                if getattr(config, "REGULATORY_GRAPH_ONLY", False):
+                    job.pipelines = ["graph"]
+                    broadcaster.log(
+                        f"Regulatory doc: forcing pipelines to graph-only for {job.filename}",
+                        module="ingestion", document_id=doc_id,
+                    )
+                else:
+                    if "graph" not in job.pipelines:
+                        job.pipelines = list(job.pipelines) + ["graph"]
+                    broadcaster.log(
+                        f"Regulatory doc: ensuring Graph RAG for {job.filename}",
+                        module="ingestion", document_id=doc_id,
+                    )
+
+            ingestion_start_time = datetime.now(timezone.utc)
+            total_paused_seconds = 0.0  # exclude pause time from ingestion duration
+
+            pipelines_list = [p for p in ["pageindex", "contextual", "graph"] if p in job.pipelines]
             total_pipelines = len(pipelines_list)
             broadcaster.log(
                 f"Starting ingestion for {job.filename} ({total_pipelines} pipelines: {', '.join(pipelines_list)})",
@@ -226,141 +346,400 @@ class IngestionWorker:
 
             try:
                 doc_stem = Path(file_path).stem
-                is_image = is_image_file(file_path)
-                extraction_text: str = ""
+                fallback_text: str | None = None
+                pageindex_handled_by_ocr = False
+                is_pdf = Path(file_path).suffix.lower() == ".pdf"
+                is_image = _is_image_only(file_path)
 
-                # ── Pipeline 1: Image Extraction ─────────────────────────
-                if "extraction" in job.pipelines and not job.cancel_event.is_set():
-                    job.current_pipeline = "extraction"
-                    ingestion_state.mark_running(doc_id, "extraction")
-                    step = pipelines_list.index("extraction") + 1
+                # ── Image-only (UI screenshot): VLM-only path; PageIndex uses only VLM output ──
+                if is_image:
+                    view_hierarchy = _load_view_hierarchy_if_present(file_path)
+                    if cb:
+                        cb("Extracting text from screenshot (VLM only for PageIndex)…")
+                    fallback_text = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: extract_text_with_vlm_image(file_path, callback=cb)
+                    )
+                    # Optional: SOM + compliance audit; store result in DB. Optionally ground audit with Graph RAG regulatory context.
+                    try:
+                        som_json = await asyncio.get_event_loop().run_in_executor(
+                            None, lambda: extract_screen_object_model(file_path, view_hierarchy, callback=cb)
+                        )
+                        regulatory_ctx = ""
+                        try:
+                            gs = GraphSearcher(self._get_llm())
+                            for gdoc in (gs.list_graphs() or [])[:3]:
+                                gs.load_graph(gdoc)
+                                r = gs.search("WCAG 2.2 Level AA requirements: contrast, focus indicators, alternative text, touch targets, accessibility", mode="local", doc_name=gdoc)
+                                if r.get("context"):
+                                    regulatory_ctx += (r["context"] or "").strip() + "\n\n"
+                            if regulatory_ctx:
+                                broadcaster.log("Using Graph RAG regulatory context for audit", module="ingestion", document_id=doc_id)
+                        except Exception:
+                            pass
+                        audit_result = await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: run_ui_compliance_audit(
+                                file_path,
+                                som_json=som_json if som_json else None,
+                                regulatory_context=regulatory_ctx.strip() or None,
+                                callback=cb,
+                            ),
+                        )
+                        if audit_result and (audit_result.get("detected_violations") is not None or audit_result.get("audit_metadata")):
+                            await db.refresh(doc)
+                            doc.audit_result = json.dumps(audit_result, ensure_ascii=False)
+                            doc.ingestion_type = "screenshot"
+                            await db.commit()
+                            broadcaster.log(
+                                f"UI audit saved for screenshot ({len(audit_result.get('detected_violations', []))} violations)",
+                                module="ingestion", document_id=doc_id,
+                            )
+                    except Exception as audit_exc:
+                        broadcaster.log(
+                            f"Screenshot SOM/audit optional step failed: {audit_exc}",
+                            module="ingestion", document_id=doc_id, level="WARNING",
+                        )
+                    # PageIndex for screenshot: minimal tree from VLM text only (no OCR, no other source)
+                    if "pageindex" in job.pipelines and not job.cancel_event.is_set() and (fallback_text or "").strip():
+                        job.current_pipeline = "pageindex"
+                        ingestion_state.mark_running(doc_id, "pageindex")
+                        step = pipelines_list.index("pageindex") + 1
+                        broadcaster.log(
+                            f"Pipeline {step}/{total_pipelines}: PageIndex — minimal tree from VLM (screenshot)",
+                            module="ingestion", document_id=doc_id,
+                        )
+                        await db.refresh(doc)
+                        doc.pageindex_status = "running"
+                        await db.commit()
+                        try:
+                            config.PAGEINDEX_DIR.mkdir(parents=True, exist_ok=True)
+                            pageindex_json_path = config.PAGEINDEX_DIR / f"{doc_stem}.json"
+                            minimal_root = minimal_official_tree(doc_stem, fallback_text or "")
+                            with open(pageindex_json_path, "w", encoding="utf-8") as f:
+                                json.dump(minimal_root, f, indent=2, ensure_ascii=False)
+                            await db.refresh(doc)
+                            doc.pageindex_status = "done"
+                            await db.commit()
+                            ingestion_state.mark_pipeline_done(doc_id, "pageindex")
+                            broadcaster.log(f"PageIndex (VLM-only) complete for {job.filename}", module="pageindex", document_id=doc_id)
+                        except Exception as exc:
+                            await db.refresh(doc)
+                            doc.pageindex_status = "error"
+                            doc.error_message = str(exc)
+                            await db.commit()
+                            broadcaster.log(f"PageIndex FAILED: {exc}", module="pageindex", document_id=doc_id, level="ERROR")
+                # End of image-only block; contextual and graph below use fallback_text when is_image
+
+                # Non-PDF (and not already handled as image): extract text once for all pipelines
+                if not is_pdf and not is_image:
+                    fallback_text = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: extract_text_from_file(file_path, callback=cb)
+                    )
+                    if not fallback_text or not fallback_text.strip():
+                        broadcaster.log(
+                            f"No text extracted from {job.filename}; skipping ingestion",
+                            module="ingestion", document_id=doc_id, level="WARNING",
+                        )
+
+                # PageIndex for non-PDF (not image: image path already did PageIndex above): minimal tree from extracted text
+                if not is_pdf and not is_image and "pageindex" in job.pipelines and not job.cancel_event.is_set() and (fallback_text or "").strip():
+                    job.current_pipeline = "pageindex"
+                    ingestion_state.mark_running(doc_id, "pageindex")
+                    step = pipelines_list.index("pageindex") + 1
                     broadcaster.log(
-                        f"Pipeline {step}/{total_pipelines}: Extraction — extracting image description with VLM",
+                        f"Pipeline {step}/{total_pipelines}: PageIndex — building minimal tree from extracted text",
                         module="ingestion", document_id=doc_id,
                     )
                     await db.refresh(doc)
-                    doc.extraction_status = "running"
+                    doc.pageindex_status = "running"
                     await db.commit()
-
                     try:
-                        if is_image:
-                            extraction_data = await asyncio.get_event_loop().run_in_executor(
-                                None, lambda: extract_image_description(file_path, callback=cb)
-                            )
-                            await broadcaster.flush_thread_queue()
-
-                            if extraction_data and extraction_data.get("merged_description"):
-                                extraction_text = extraction_data["merged_description"]
-                                await asyncio.get_event_loop().run_in_executor(
-                                    None, lambda: save_extraction(doc_stem, extraction_data)
-                                )
-                                await db.refresh(doc)
-                                doc.extraction_status = "done"
-                                await db.commit()
-                                ingestion_state.mark_pipeline_done(doc_id, "extraction")
-                                broadcaster.log(
-                                    f"Extraction complete: {len(extraction_text)} chars extracted",
-                                    module="extraction", document_id=doc_id,
-                                )
-                            else:
-                                broadcaster.log(
-                                    "Extraction produced no description",
-                                    module="extraction", document_id=doc_id, level="WARNING",
-                                )
-                                await db.refresh(doc)
-                                doc.extraction_status = "done"
-                                await db.commit()
-                                ingestion_state.mark_pipeline_done(doc_id, "extraction")
-                        else:
-                            # Non-image files: extract text for downstream pipelines
-                            extraction_text = await asyncio.get_event_loop().run_in_executor(
-                                None, lambda: extract_text_from_file(file_path, callback=cb) or ""
-                            )
-                            await broadcaster.flush_thread_queue()
-                            if extraction_text:
-                                save_data = {
-                                    "merged_description": extraction_text,
-                                    "file_type": Path(file_path).suffix.lower(),
-                                    "file_path": str(file_path),
-                                }
-                                await asyncio.get_event_loop().run_in_executor(
-                                    None, lambda: save_extraction(doc_stem, save_data)
-                                )
-                            await db.refresh(doc)
-                            doc.extraction_status = "done"
-                            await db.commit()
-                            ingestion_state.mark_pipeline_done(doc_id, "extraction")
-                            broadcaster.log(
-                                f"Text extraction complete: {len(extraction_text)} chars",
-                                module="extraction", document_id=doc_id,
-                            )
+                        config.PAGEINDEX_DIR.mkdir(parents=True, exist_ok=True)
+                        pageindex_json_path = config.PAGEINDEX_DIR / f"{doc_stem}.json"
+                        minimal_root = minimal_official_tree(doc_stem, fallback_text or "")
+                        with open(pageindex_json_path, "w", encoding="utf-8") as f:
+                            json.dump(minimal_root, f, indent=2, ensure_ascii=False)
+                        await db.refresh(doc)
+                        doc.pageindex_status = "done"
+                        await db.commit()
+                        ingestion_state.mark_pipeline_done(doc_id, "pageindex")
+                        broadcaster.log(f"PageIndex (minimal tree) complete for {job.filename}", module="pageindex", document_id=doc_id)
                     except Exception as exc:
                         await db.refresh(doc)
-                        doc.extraction_status = "error"
+                        doc.pageindex_status = "error"
                         doc.error_message = str(exc)
                         await db.commit()
-                        broadcaster.log(f"Extraction FAILED: {exc}", module="extraction", document_id=doc_id, level="ERROR")
+                        broadcaster.log(f"PageIndex FAILED: {exc}", module="pageindex", document_id=doc_id, level="ERROR")
 
-                await self._wait_if_paused(job)
+                # PageIndex (digital PDF path, or when Docling-first was skipped/failed)
+                if is_pdf and "pageindex" in job.pipelines and not job.cancel_event.is_set() and not pageindex_handled_by_ocr:
+                    job.current_pipeline = "pageindex"
+                    ingestion_state.mark_running(doc_id, "pageindex")
+                    step = pipelines_list.index("pageindex") + 1
+                    await db.refresh(doc)
+                    doc.pageindex_status = "running"
+                    await db.commit()
 
-                # ── Pipeline 2: EDI Evaluation ───────────────────────────
-                if "edi_evaluation" in job.pipelines and not job.cancel_event.is_set():
-                    job.current_pipeline = "edi_evaluation"
-                    ingestion_state.mark_running(doc_id, "edi_evaluation")
-                    step = pipelines_list.index("edi_evaluation") + 1
+                    # Triage-driven routing (when enabled): fast_pageindex | ocr_scanned | mixed_layout | complex_visual
+                    triage_handled = False
+                    if getattr(config, "PDF_TRIAGE_ENABLED", False):
+                        triage_result = await asyncio.get_event_loop().run_in_executor(
+                            None, lambda: get_document_route(file_path)
+                        )
+                        broadcaster.log(
+                            f"PDF triage: {triage_result.route} — {triage_result.reason}",
+                            module="ingestion", document_id=doc_id,
+                        )
+                        logger.info(
+                            "ingestion: triage route=%s summary=%s", triage_result.route, triage_result.summary,
+                        )
+
+                        if triage_result.route in (
+                            ROUTE_OCR_SCANNED,
+                            ROUTE_MIXED_LAYOUT,
+                            ROUTE_COMPLEX_VISUAL,
+                        ):
+                            def _run_ocr_with_vlm_context():
+                                ocr_md = extract_text_with_fast_ocr(file_path, callback=cb)
+                                if not ocr_md or not ocr_md.strip():
+                                    return None
+                                summaries = get_per_page_visual_summaries(file_path, callback=cb)
+                                if summaries:
+                                    ocr_md = inject_vlm_summaries_into_ocr_markdown(ocr_md, summaries)
+                                ocr_md = validate_and_fix_headers(ocr_md)
+                                b = TreeBuilder(llm)
+                                b.ingest_markdown(ocr_md, doc_name=doc_stem, out_name=doc_stem, callback=cb, pdf_path=file_path)
+                                return ocr_md
+                            try:
+                                combined_text = await asyncio.get_event_loop().run_in_executor(
+                                    None, _run_ocr_with_vlm_context
+                                )
+                                if combined_text:
+                                    fallback_text = combined_text
+                                    await db.refresh(doc)
+                                    doc.pageindex_status = "done"
+                                    await db.commit()
+                                    ingestion_state.mark_pipeline_done(doc_id, "pageindex")
+                                    broadcaster.log(
+                                        f"OCR + VLM visual context complete ({len(combined_text)} chars); PageIndex summary context includes VLM",
+                                        module="ingestion", document_id=doc_id,
+                                    )
+                                    triage_handled = True
+                            except Exception as exc:
+                                broadcaster.log(
+                                    f"OCR+VLM context failed: {exc}; falling back",
+                                    module="ingestion", document_id=doc_id, level="WARNING",
+                                )
+
+                    # fast_pageindex path or fallback: selectable text only (no OCR/VLM), or legacy sparse check
+                    if not triage_handled and not (fallback_text and fallback_text.strip() and doc.pageindex_status == "done"):
+                        if not getattr(config, "PDF_TRIAGE_ENABLED", False) and should_use_vlm_for_sparse_pages(file_path):
+                            broadcaster.log(
+                                f"PDF has sparse text per page; running full VLM extraction for {job.filename}",
+                                module="ingestion", document_id=doc_id,
+                            )
+                            try:
+                                def _run_vlm_for_sparse():
+                                    vlm_md = extract_text_with_vlm(file_path, callback=cb)
+                                    if not vlm_md or not vlm_md.strip():
+                                        return None
+                                    vlm_md = validate_and_fix_headers(vlm_md)
+                                    b = TreeBuilder(llm)
+                                    b.ingest_markdown(vlm_md, doc_name=doc_stem, out_name=doc_stem, callback=cb, pdf_path=file_path)
+                                    return vlm_md
+                                vlm_text = await asyncio.get_event_loop().run_in_executor(None, _run_vlm_for_sparse)
+                                if vlm_text:
+                                    fallback_text = vlm_text
+                                    await db.refresh(doc)
+                                    doc.pageindex_status = "done"
+                                    await db.commit()
+                                    ingestion_state.mark_pipeline_done(doc_id, "pageindex")
+                                    broadcaster.log(
+                                        f"VLM extraction complete for image-heavy PDF ({len(vlm_text)} chars)",
+                                        module="ingestion", document_id=doc_id,
+                                    )
+                            except Exception as exc:
+                                broadcaster.log(f"VLM for sparse failed: {exc}; falling back to PageIndex", module="ingestion", document_id=doc_id, level="WARNING")
+
+                        if not (fallback_text and fallback_text.strip() and doc.pageindex_status == "done"):
+                            broadcaster.log(
+                                f"Pipeline {step}/{total_pipelines}: PageIndex — building section tree and summaries",
+                                module="ingestion", document_id=doc_id,
+                            )
+                            broadcaster.log(f"Starting PageIndex for {job.filename}", module="pageindex", document_id=doc_id)
+                            try:
+                                builder = TreeBuilder(llm)
+                                tree = await asyncio.get_event_loop().run_in_executor(
+                                    None, lambda: builder.ingest(file_path, callback=cb)
+                                )
+                                await broadcaster.flush_thread_queue()
+                                await db.refresh(doc)
+                                doc.pageindex_status = "done"
+                                await db.commit()
+                                ingestion_state.mark_pipeline_done(doc_id, "pageindex")
+                                broadcaster.log(f"PageIndex complete for {job.filename}", module="pageindex", document_id=doc_id)
+                            except Exception as exc:
+                                await db.refresh(doc)
+                                doc.pageindex_status = "error"
+                                doc.error_message = str(exc)
+                                await db.commit()
+                                broadcaster.log(f"PageIndex FAILED: {exc}", module="pageindex", document_id=doc_id, level="ERROR")
+
+                # If PageIndex produced "Empty Document", run fast OCR then deepdoctection fallback (PDF only)
+                pageindex_json_path = config.PAGEINDEX_DIR / f"{doc_stem}.json"
+                if (
+                    is_pdf
+                    and is_pageindex_empty(pageindex_json_path)
+                    and (not fallback_text or not fallback_text.strip())
+                    and not job.cancel_event.is_set()
+                ):
                     broadcaster.log(
-                        f"Pipeline {step}/{total_pipelines}: EDI Evaluation — assessing EDI compliance",
+                        f"PageIndex empty for {job.filename}; running fast OCR pipeline",
+                        module="ingestion", document_id=doc_id,
+                    )
+                    try:
+                        ocr_md = await asyncio.get_event_loop().run_in_executor(
+                            None, lambda: extract_text_with_fast_ocr(file_path, callback=cb)
+                        )
+                        if ocr_md and ocr_md.strip():
+                            ocr_md = validate_and_fix_headers(ocr_md)
+                            builder = TreeBuilder(llm)
+                            builder.ingest_markdown(
+                                ocr_md, doc_name=doc_stem, out_name=doc_stem, callback=cb, pdf_path=file_path
+                            )
+                            fallback_text = ocr_md
+                            broadcaster.log(
+                                f"Fast OCR produced Markdown; PageIndex tree updated ({len(fallback_text)} chars)",
+                                module="ingestion", document_id=doc_id,
+                            )
+                    except Exception as exc:
+                        broadcaster.log(f"Fast OCR fallback failed: {exc}", module="ingestion", document_id=doc_id, level="WARNING")
+
+                    # deepdoctection (last resort — minimal tree + text for embeddings)
+                    if (not fallback_text or not fallback_text.strip()) and not job.cancel_event.is_set():
+                        broadcaster.log(
+                            f"Fast OCR produced no output; trying deepdoctection fallback",
+                            module="ingestion", document_id=doc_id,
+                        )
+                        fallback_text = await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: extract_text_with_deepdoctection(
+                                file_path,
+                                callback=cb,
+                                doc_stem=doc_stem,
+                                extract_figures=True,
+                            ),
+                        )
+                        if fallback_text and fallback_text.strip():
+                            config.PAGEINDEX_DIR.mkdir(parents=True, exist_ok=True)
+                            minimal_root = minimal_official_tree(doc_stem, fallback_text)
+                            with open(pageindex_json_path, "w", encoding="utf-8") as f:
+                                json.dump(minimal_root, f, indent=2, ensure_ascii=False)
+                            broadcaster.log(
+                                f"deepdoctection extracted text; updated PageIndex with {len(fallback_text)} chars",
+                                module="ingestion", document_id=doc_id,
+                            )
+                        elif not fallback_text or not fallback_text.strip():
+                            broadcaster.log(
+                                "All extraction methods exhausted; Vector Embeddings Contextual Process/graph may have no content",
+                                module="ingestion", document_id=doc_id, level="WARNING",
+                            )
+
+                # Extract PDF page images for reasoning-based retrieval + VLM visual answer (when PageIndex exists)
+                if is_pdf and not job.cancel_event.is_set() and (config.PAGEINDEX_DIR / f"{doc_stem}.json").exists():
+                    out_dir = config.PDF_IMAGES_DIR / doc_stem
+                    logger.info(
+                        "ingestion: extracting PDF page images doc_stem=%s pdf=%s -> %s",
+                        doc_stem, file_path, out_dir.resolve(),
+                    )
+                    broadcaster.log(
+                        f"Extracting PDF page images to {out_dir.resolve()} for VLM visual retrieval",
+                        module="ingestion", document_id=doc_id,
+                    )
+
+                    def _extract_pdf_images():
+                        config.PDF_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+                        page_images, total = extract_pdf_page_images(file_path, output_dir=out_dir)
+                        return len(page_images), total
+
+                    try:
+                        n_images, total_pages = await asyncio.get_event_loop().run_in_executor(None, _extract_pdf_images)
+                        if n_images:
+                            broadcaster.log(
+                                f"Extracted {n_images}/{total_pages} PDF page images to {out_dir.resolve()}",
+                                module="ingestion", document_id=doc_id,
+                            )
+                            logger.info(
+                                "ingestion: PDF page images saved doc_stem=%s n_images=%d total_pages=%d path=%s",
+                                doc_stem, n_images, total_pages, out_dir.resolve(),
+                            )
+                        else:
+                            logger.warning("ingestion: PDF page image extraction produced 0 images for doc_stem=%s", doc_stem)
+                    except Exception as exc:
+                        logger.warning("ingestion: PDF page image extraction failed doc_stem=%s: %s", doc_stem, exc)
+                        broadcaster.log(
+                            f"PDF page image extraction failed: {exc}",
+                            module="ingestion", document_id=doc_id, level="WARNING",
+                        )
+
+                pause_start = datetime.now(timezone.utc)
+                await self._wait_if_paused(job)
+                total_paused_seconds += (datetime.now(timezone.utc) - pause_start).total_seconds()
+
+                # Vector Embeddings Contextual Process
+                if "contextual" in job.pipelines and not job.cancel_event.is_set():
+                    job.current_pipeline = "contextual"
+                    ingestion_state.mark_running(doc_id, "contextual")
+                    step = pipelines_list.index("contextual") + 1
+                    broadcaster.log(
+                        f"Pipeline {step}/{total_pipelines}: Vector Embeddings Contextual Process — chunking, contextualizing, and embedding",
                         module="ingestion", document_id=doc_id,
                     )
                     await db.refresh(doc)
-                    doc.edi_status = "running"
+                    doc.contextual_status = "running"
                     await db.commit()
-
+                    broadcaster.log(f"Starting Vector Embeddings Contextual Process for {job.filename}", module="contextual", document_id=doc_id)
                     try:
-                        # Load extraction text if we don't have it yet
-                        if not extraction_text:
-                            existing_extraction = load_extraction(doc_stem)
-                            if existing_extraction:
-                                extraction_text = existing_extraction.get("merged_description", "")
-
-                        if extraction_text:
-                            edi_result = await asyncio.get_event_loop().run_in_executor(
-                                None, lambda: evaluate_edi_compliance(extraction_text, llm, callback=cb)
-                            )
-                            await broadcaster.flush_thread_queue()
-
-                            await asyncio.get_event_loop().run_in_executor(
-                                None, lambda: save_edi_evaluation(doc_stem, edi_result)
-                            )
-
-                            await db.refresh(doc)
-                            doc.edi_status = "done"
-                            doc.edi_rating = edi_result.get("overall_rating", "")
-                            await db.commit()
-                            ingestion_state.mark_pipeline_done(doc_id, "edi_evaluation")
-                            broadcaster.log(
-                                f"EDI evaluation complete: {edi_result.get('overall_rating', 'UNKNOWN')}",
-                                module="edi", document_id=doc_id,
+                        retriever = ContextualRetriever(llm)
+                        # Prefer contextually flattened PageIndex text when available so vector
+                        # chunks get hierarchy + summaries (no empty-parent or orphaned-child loss).
+                        text_to_ingest = await asyncio.get_event_loop().run_in_executor(
+                            None, lambda: _text_from_pageindex_tree(doc_stem)
+                        )
+                        text_to_ingest = (text_to_ingest or "").strip()
+                        if not text_to_ingest:
+                            text_to_ingest = (fallback_text or "").strip()
+                        if not text_to_ingest and not is_pdf:
+                            text_to_ingest = (await asyncio.get_event_loop().run_in_executor(
+                                None, lambda: extract_text_from_file(file_path, callback=cb)
+                            ) or "").strip()
+                        if text_to_ingest:
+                            count = await asyncio.get_event_loop().run_in_executor(
+                                None, lambda: retriever.ingest_text(doc_stem, text_to_ingest, callback=cb)
                             )
                         else:
-                            broadcaster.log(
-                                "No extraction text available for EDI evaluation; skipping",
-                                module="edi", document_id=doc_id, level="WARNING",
+                            count = await asyncio.get_event_loop().run_in_executor(
+                                None, lambda: retriever.ingest(file_path, callback=cb)
                             )
-                            await db.refresh(doc)
-                            doc.edi_status = "skipped"
-                            await db.commit()
-                            ingestion_state.mark_pipeline_done(doc_id, "edi_evaluation")
+                        await broadcaster.flush_thread_queue()
+                        await db.refresh(doc)
+                        doc.contextual_status = "done"
+                        doc.chunk_count = count
+                        await db.commit()
+                        ingestion_state.mark_pipeline_done(doc_id, "contextual")
+                        broadcaster.log(f"Vector Embeddings Contextual Process complete: {count} chunks indexed", module="contextual", document_id=doc_id)
                     except Exception as exc:
                         await db.refresh(doc)
-                        doc.edi_status = "error"
+                        doc.contextual_status = "error"
                         doc.error_message = str(exc)
                         await db.commit()
-                        broadcaster.log(f"EDI Evaluation FAILED: {exc}", module="edi", document_id=doc_id, level="ERROR")
+                        broadcaster.log(f"Vector Embeddings Contextual Process FAILED: {exc}", module="contextual", document_id=doc_id, level="ERROR")
 
+                pause_start = datetime.now(timezone.utc)
                 await self._wait_if_paused(job)
+                total_paused_seconds += (datetime.now(timezone.utc) - pause_start).total_seconds()
 
-                # ── Pipeline 3: Graph RAG ────────────────────────────────
+                # Graph RAG
                 if "graph" in job.pipelines and not job.cancel_event.is_set():
                     job.current_pipeline = "graph"
                     ingestion_state.mark_running(doc_id, "graph")
@@ -374,17 +753,23 @@ class IngestionWorker:
                     await db.commit()
                     broadcaster.log(f"Starting Graph RAG for {job.filename}", module="graph", document_id=doc_id)
                     try:
-                        # Use extraction text if available, otherwise extract fresh
-                        full_text = extraction_text
+                        full_text = (fallback_text if fallback_text and fallback_text.strip() else None)
+                        if not full_text and is_pdf:
+                            pageindex_text = _text_from_pageindex_tree(doc_stem)
+                            if pageindex_text and pageindex_text.strip():
+                                full_text = pageindex_text
+                                broadcaster.log(
+                                    f"Using PageIndex tree text for graph ({len(full_text)} chars)",
+                                    module="graph", document_id=doc_id,
+                                )
                         if not full_text:
-                            existing_extraction = load_extraction(doc_stem)
-                            if existing_extraction:
-                                full_text = existing_extraction.get("merged_description", "")
-                        if not full_text:
-                            full_text = await asyncio.get_event_loop().run_in_executor(
-                                None, lambda: extract_text_from_file(file_path, callback=cb) or ""
+                            full_text = (
+                                extract_text_from_file(file_path, callback=cb)
+                                if not is_pdf
+                                else extract_text_from_pdf(file_path)
                             )
-
+                        if full_text:
+                            full_text = sanitize_extracted_text(full_text)
                         if not full_text or not full_text.strip():
                             broadcaster.log(
                                 "No text available for graph; skipping entity extraction",
@@ -392,7 +777,7 @@ class IngestionWorker:
                             )
                         graph_builder = GraphBuilder(llm)
                         stats = await asyncio.get_event_loop().run_in_executor(
-                            None, lambda: graph_builder.ingest(full_text, doc_name=doc_stem, callback=cb)
+                            None, lambda: graph_builder.ingest(full_text, doc_name=Path(file_path).stem, callback=cb)
                         )
                         await broadcaster.flush_thread_queue()
                         await db.refresh(doc)
@@ -402,6 +787,26 @@ class IngestionWorker:
                         await db.commit()
                         ingestion_state.mark_pipeline_done(doc_id, "graph")
                         broadcaster.log(f"Graph complete: {stats}", module="graph", document_id=doc_id)
+
+                        # Update global knowledge base taxonomy from the new graph
+                        doc_stem_kb = Path(file_path).stem
+                        logger.info("ingestion: KB update START doc_stem=%s doc_id=%s graph_nodes=%d", doc_stem_kb, doc_id, graph_builder.graph.number_of_nodes())
+                        try:
+                            kb = get_knowledge_base()
+                            kb_stats = await asyncio.get_event_loop().run_in_executor(
+                                None, lambda: kb.update_from_graph(doc_stem_kb, graph_builder.graph, callback=cb)
+                            )
+                            logger.info(
+                                "ingestion: KB update DONE doc_stem=%s doc_id=%s new_entities=%d updated_entities=%d new_relations=%d",
+                                doc_stem_kb, doc_id, kb_stats["new_entities"], kb_stats["updated_entities"], kb_stats["new_relations"],
+                            )
+                            broadcaster.log(
+                                f"Knowledge base updated: +{kb_stats['new_entities']} entities, +{kb_stats['new_relations']} relations",
+                                module="knowledge_base", document_id=doc_id,
+                            )
+                        except Exception as kb_exc:
+                            logger.warning("ingestion: KB update FAILED doc_stem=%s doc_id=%s: %s", doc_stem_kb, doc_id, kb_exc)
+                            broadcaster.log(f"Knowledge base update warning: {kb_exc}", module="knowledge_base", document_id=doc_id, level="WARNING")
                     except Exception as exc:
                         await db.refresh(doc)
                         doc.graph_status = "error"
@@ -409,34 +814,49 @@ class IngestionWorker:
                         await db.commit()
                         broadcaster.log(f"Graph FAILED: {exc}", module="graph", document_id=doc_id, level="ERROR")
 
-                # Mark pipelines that weren't run as skipped only if still pending
+                # Mark pipelines that weren't run as skipped only if still pending (don't overwrite done/error)
                 await db.refresh(doc)
-                if "extraction" not in job.pipelines and doc.extraction_status == "pending":
-                    doc.extraction_status = "skipped"
-                if "edi_evaluation" not in job.pipelines and doc.edi_status == "pending":
-                    doc.edi_status = "skipped"
+                if "pageindex" not in job.pipelines and doc.pageindex_status == "pending":
+                    doc.pageindex_status = "skipped"
+                if "contextual" not in job.pipelines and doc.contextual_status == "pending":
+                    doc.contextual_status = "skipped"
                 if "graph" not in job.pipelines and doc.graph_status == "pending":
                     doc.graph_status = "skipped"
 
                 if job.cancel_event.is_set():
                     doc.status = "uploaded"
                     doc.error_message = ""
-                    doc.extraction_status = "pending"
-                    doc.edi_status = "pending"
+                    # Reset all pipeline statuses — the cancel-all route
+                    # cleans up artefacts; we reset DB statuses here too
+                    # to avoid races where a just-finished pipeline overwrites
+                    # the route's cleanup.
+                    doc.pageindex_status = "pending"
+                    doc.contextual_status = "pending"
                     doc.graph_status = "pending"
+                    doc.chunk_count = 0
                     doc.node_count = 0
                     doc.edge_count = 0
-                    doc.edi_rating = ""
                     job.status = "cancelled"
                     ingestion_state.mark_cancelled(doc_id)
                 else:
-                    # Ready only when all three pipelines are done; otherwise uploaded
-                    all_pipelines_done = (
-                        doc.extraction_status in ("done", "skipped")
-                        and doc.edi_status in ("done", "skipped")
-                        and doc.graph_status == "done"
+                    # Ready when every pipeline that was requested for this job is done
+                    def _status_for(p: str) -> str:
+                        if p == "pageindex":
+                            return doc.pageindex_status
+                        if p == "contextual":
+                            return doc.contextual_status
+                        if p == "graph":
+                            return doc.graph_status
+                        return "pending"
+                    all_requested_done = all(
+                        _status_for(p) == "done" for p in job.pipelines
                     )
-                    doc.status = "ready" if all_pipelines_done else "uploaded"
+                    if all_requested_done:
+                        doc.status = "ready"
+                        elapsed = (datetime.now(timezone.utc) - ingestion_start_time).total_seconds()
+                        doc.ingestion_duration_seconds = int(max(0, elapsed - total_paused_seconds))
+                    else:
+                        doc.status = "uploaded"
                     job.status = "done"
                     ingestion_state.mark_done(doc_id)
 
