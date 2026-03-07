@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Send, Loader2, FileText, Zap, Brain } from "lucide-react";
+import { Send, Loader2, FileText, Zap, Brain, Paperclip } from "lucide-react";
 import type { ChatMessage, SourceReference } from "@/lib/types";
 import { getDocumentFileUrl, getDocumentPdfUrl } from "@/lib/api";
 import TraceViewer from "./TraceViewer";
@@ -11,6 +11,8 @@ import SideBySideViewer from "@/components/documents/SideBySideViewer";
 interface ChatPanelProps {
   messages: ChatMessage[];
   onSend: (content: string) => Promise<void>;
+  onUploadFiles?: (files: File[]) => Promise<void>;
+  uploadingFiles?: boolean;
   onSetPreference?: (optionText: string, accepted: boolean) => Promise<void>;
   loading: boolean;
   forceRoute: string | null;
@@ -206,6 +208,8 @@ function isPdf(filename: string): boolean {
 export default function ChatPanel({
   messages,
   onSend,
+  onUploadFiles,
+  uploadingFiles = false,
   onSetPreference,
   loading,
   forceRoute,
@@ -230,6 +234,7 @@ export default function ChatPanel({
   const [prefSaving, setPrefSaving] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [refViewer, setRefViewer] = useState<{
     documentId: number;
     filename: string;
@@ -249,10 +254,23 @@ export default function ChatPanel({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || loading) return;
+    if (!input.trim() || loading || uploadingFiles) return;
     const msg = input;
     setInput("");
     await onSend(msg);
+  };
+
+  const handleChooseFiles = () => {
+    if (!onUploadFiles || loading || uploadingFiles) return;
+    fileInputRef.current?.click();
+  };
+
+  const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!onUploadFiles) return;
+    const files = Array.from(e.target.files ?? []);
+    e.currentTarget.value = "";
+    if (files.length === 0) return;
+    await onUploadFiles(files);
   };
 
   const getClarificationQuestions = (metadata: Record<string, unknown>): string[] => {
@@ -643,15 +661,32 @@ export default function ChatPanel({
       <form onSubmit={handleSubmit} className="p-4 border-t border-[var(--border)] bg-[var(--bg-secondary)]">
         <div className="flex gap-2">
           <input
+            ref={fileInputRef}
+            type="file"
+            accept=".png,.jpg,.jpeg,.pdf,.doc,.docx,.xlsx,.xlsm,.xls,.json,.html,.htm"
+            multiple
+            className="hidden"
+            onChange={handleFileInputChange}
+          />
+          <button
+            type="button"
+            onClick={handleChooseFiles}
+            disabled={!onUploadFiles || loading || uploadingFiles}
+            className="px-3 py-2.5 bg-[var(--bg-tertiary)] border border-[var(--border)] text-[var(--text-primary)] rounded-lg hover:bg-[var(--bg-primary)] disabled:opacity-50 transition-colors"
+            title="Upload files (screenshots are analyzed with VLM + WCAG RAG)"
+          >
+            {uploadingFiles ? <Loader2 size={16} className="animate-spin" /> : <Paperclip size={16} />}
+          </button>
+          <input
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask a question about your documents..."
+            placeholder={uploadingFiles ? "Uploading files..." : "Ask a question or upload screenshots..."}
             className="flex-1 px-4 py-2.5 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder:text-[var(--text-secondary)] focus:outline-none focus:border-[var(--accent)]"
           />
           <button
             type="submit"
-            disabled={!input.trim() || loading}
+            disabled={!input.trim() || loading || uploadingFiles}
             className="px-4 py-2.5 bg-[var(--accent)] text-white rounded-lg hover:bg-[var(--accent-hover)] disabled:opacity-50 transition-colors"
           >
             <Send size={16} />

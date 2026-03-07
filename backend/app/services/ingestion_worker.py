@@ -36,9 +36,15 @@ from app.modules.vlm_extract import (
     extract_text_with_vlm_image,
     extract_screen_object_model,
     run_ui_compliance_audit,
+    run_text_only_compliance_audit,
     get_per_page_visual_summaries,
     inject_vlm_summaries_into_ocr_markdown,
+    unload_vlm_from_vram,
     should_use_vlm_for_sparse_pages,
+)
+from app.modules.image_extraction import (
+    extract_image_description,
+    save_extraction,
 )
 from app.modules.pdf_images import extract_pdf_page_images
 from app.modules.pdf_triage import (
@@ -196,6 +202,9 @@ class IngestionWorker:
                 module="ingestion", document_id=document_id, level="WARNING",
             )
             return existing
+        # Clear stale finished/errored jobs so re-ingestion works
+        if existing and existing.status in ("done", "error", "cancelled"):
+            del self._jobs[document_id]
         job = IngestionJob(
             document_id=document_id,
             filename=filename,
@@ -351,61 +360,163 @@ class IngestionWorker:
                 is_pdf = Path(file_path).suffix.lower() == ".pdf"
                 is_image = _is_image_only(file_path)
 
-                # ── Image-only (UI screenshot): VLM-only path; PageIndex uses only VLM output ──
+                # ── Image-only (UI screenshot): VLM UI analysis → WCAG RAG compliance audit ──
                 if is_image:
                     view_hierarchy = _load_view_hierarchy_if_present(file_path)
-                    if cb:
-                        cb("Extracting text from screenshot (VLM only for PageIndex)…")
-                    fallback_text = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda: extract_text_with_vlm_image(file_path, callback=cb)
+
+                    # Step 1: Rich VLM UI description (notebook-style: full screenshot + status bar)
+                    broadcaster.log(
+                        "Step 1/4: Extracting detailed UI description from screenshot…",
+                        module="ingestion", document_id=doc_id,
                     )
-                    # Optional: SOM + compliance audit; store result in DB. Optionally ground audit with Graph RAG regulatory context.
+                    extraction_data = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: extract_image_description(file_path, callback=cb)
+                    )
+                    ui_description = (extraction_data.get("merged_description") or "").strip()
+                    fallback_text = ui_description
+                    broadcaster.log(
+                        f"UI description extracted: {len(ui_description)} chars",
+                        module="ingestion", document_id=doc_id,
+                    )
+
+                    # For screenshot compliance, UI-description generation is mandatory.
+                    # If VLM returns empty output, fail fast instead of silently switching
+                    # to OCR-like extraction behavior.
+                    if not ui_description:
+                        msg = (
+                            "Screenshot UI analysis returned empty output. "
+                            "Cannot run WCAG compliance reasoning without a UI description."
+                        )
+                        broadcaster.log(msg, module="ingestion", document_id=doc_id, level="ERROR")
+                        await db.refresh(doc)
+                        doc.status = "error"
+                        doc.ingestion_type = "screenshot"
+                        doc.error_message = msg
+                        if "pageindex" in job.pipelines:
+                            doc.pageindex_status = "error"
+                        if "contextual" in job.pipelines:
+                            doc.contextual_status = "error"
+                        if "graph" in job.pipelines:
+                            doc.graph_status = "error"
+                        await db.commit()
+                        job.status = "error"
+                        job.error_message = msg
+                        ingestion_state.mark_error(doc_id)
+                        return
+
+                    # Save extraction metadata for later reference
+                    if extraction_data:
+                        try:
+                            await asyncio.get_event_loop().run_in_executor(
+                                None, lambda: save_extraction(doc_stem, extraction_data)
+                            )
+                        except Exception:
+                            pass
+
+                    # Step 2: SOM extraction (optional structural model for audit)
+                    som_json: dict = {}
                     try:
+                        broadcaster.log(
+                            "Step 2/4: Extracting Screen Object Model (SOM)…",
+                            module="ingestion", document_id=doc_id,
+                        )
                         som_json = await asyncio.get_event_loop().run_in_executor(
                             None, lambda: extract_screen_object_model(file_path, view_hierarchy, callback=cb)
                         )
-                        regulatory_ctx = ""
-                        try:
-                            gs = GraphSearcher(self._get_llm())
-                            for gdoc in (gs.list_graphs() or [])[:3]:
-                                gs.load_graph(gdoc)
-                                r = gs.search("WCAG 2.2 Level AA requirements: contrast, focus indicators, alternative text, touch targets, accessibility", mode="local", doc_name=gdoc)
-                                if r.get("context"):
-                                    regulatory_ctx += (r["context"] or "").strip() + "\n\n"
-                            if regulatory_ctx:
-                                broadcaster.log("Using Graph RAG regulatory context for audit", module="ingestion", document_id=doc_id)
-                        except Exception:
-                            pass
+                        n_components = len(som_json.get("components_flat", [])) if som_json else 0
+                        broadcaster.log(
+                            f"SOM extraction complete: {n_components} component(s) detected",
+                            module="ingestion", document_id=doc_id,
+                        )
+                    except Exception as som_exc:
+                        broadcaster.log(
+                            f"SOM extraction failed (non-critical): {som_exc}",
+                            module="ingestion", document_id=doc_id, level="WARNING",
+                        )
+
+                    # Free VRAM: unload VLM before switching to embedding model for WCAG retrieval
+                    await asyncio.get_event_loop().run_in_executor(None, unload_vlm_from_vram)
+
+                    # Step 3: WCAG-grounded compliance audit using the UI description
+                    # and retrieved WCAG criteria from the RAG pipeline.
+                    # Prefer the VLM-based audit when it works; if it returns an empty
+                    # result (common with very small VLMs), fall back to a text-only
+                    # audit that uses the UI description + WCAG knowledge base with
+                    # the main LLM model.
+                    try:
+                        broadcaster.log(
+                            "Step 3/4: Running WCAG compliance audit (retrieving WCAG criteria + VLM audit)…",
+                            module="ingestion", document_id=doc_id,
+                        )
                         audit_result = await asyncio.get_event_loop().run_in_executor(
                             None,
                             lambda: run_ui_compliance_audit(
                                 file_path,
+                                ui_description=ui_description or None,
                                 som_json=som_json if som_json else None,
-                                regulatory_context=regulatory_ctx.strip() or None,
                                 callback=cb,
                             ),
                         )
-                        if audit_result and (audit_result.get("detected_violations") is not None or audit_result.get("audit_metadata")):
+                        if audit_result and (
+                            audit_result.get("detected_violations") is not None
+                            or audit_result.get("audit_metadata")
+                        ):
                             await db.refresh(doc)
                             doc.audit_result = json.dumps(audit_result, ensure_ascii=False)
                             doc.ingestion_type = "screenshot"
                             await db.commit()
+                            n_violations = len(audit_result.get("detected_violations", []))
+                            status = audit_result.get("audit_metadata", {}).get("overall_compliance_status", "Unknown")
                             broadcaster.log(
-                                f"UI audit saved for screenshot ({len(audit_result.get('detected_violations', []))} violations)",
+                                f"WCAG compliance audit saved: {status}, {n_violations} violation(s)",
                                 module="ingestion", document_id=doc_id,
                             )
+                        else:
+                            # VLM audit returned empty / unparseable result; fall back to
+                            # a text-only audit that uses the UI description and WCAG KB.
+                            broadcaster.log(
+                                "WCAG audit returned empty result from VLM — running text-only WCAG audit with main LLM…",
+                                module="ingestion", document_id=doc_id, level="WARNING",
+                            )
+                            text_audit = await asyncio.get_event_loop().run_in_executor(
+                                None,
+                                lambda: run_text_only_compliance_audit(
+                                    ui_description or "",
+                                    som_json if som_json else None,
+                                    callback=cb,
+                                ),
+                            )
+                            if text_audit and (
+                                text_audit.get("detected_violations") is not None
+                                or text_audit.get("audit_metadata")
+                            ):
+                                await db.refresh(doc)
+                                doc.audit_result = json.dumps(text_audit, ensure_ascii=False)
+                                doc.ingestion_type = "screenshot"
+                                await db.commit()
+                                n_violations = len(text_audit.get("detected_violations", []))
+                                status = text_audit.get("audit_metadata", {}).get("overall_compliance_status", "Unknown")
+                                broadcaster.log(
+                                    f"Text-only WCAG audit saved: {status}, {n_violations} violation(s)",
+                                    module="ingestion", document_id=doc_id,
+                                )
+                            else:
+                                broadcaster.log(
+                                    "WCAG audit returned empty result even in text-only mode (see logs for details).",
+                                    module="ingestion", document_id=doc_id, level="WARNING",
+                                )
                     except Exception as audit_exc:
                         broadcaster.log(
-                            f"Screenshot SOM/audit optional step failed: {audit_exc}",
+                            f"WCAG compliance audit failed: {audit_exc}",
                             module="ingestion", document_id=doc_id, level="WARNING",
                         )
-                    # PageIndex for screenshot: minimal tree from VLM text only (no OCR, no other source)
+
+                    # Step 4: PageIndex for screenshot: minimal tree from VLM description
                     if "pageindex" in job.pipelines and not job.cancel_event.is_set() and (fallback_text or "").strip():
                         job.current_pipeline = "pageindex"
                         ingestion_state.mark_running(doc_id, "pageindex")
-                        step = pipelines_list.index("pageindex") + 1
                         broadcaster.log(
-                            f"Pipeline {step}/{total_pipelines}: PageIndex — minimal tree from VLM (screenshot)",
+                            "Step 4/4: PageIndex — building minimal tree from VLM UI description",
                             module="ingestion", document_id=doc_id,
                         )
                         await db.refresh(doc)
@@ -421,7 +532,7 @@ class IngestionWorker:
                             doc.pageindex_status = "done"
                             await db.commit()
                             ingestion_state.mark_pipeline_done(doc_id, "pageindex")
-                            broadcaster.log(f"PageIndex (VLM-only) complete for {job.filename}", module="pageindex", document_id=doc_id)
+                            broadcaster.log(f"PageIndex (VLM UI description) complete for {job.filename}", module="pageindex", document_id=doc_id)
                         except Exception as exc:
                             await db.refresh(doc)
                             doc.pageindex_status = "error"

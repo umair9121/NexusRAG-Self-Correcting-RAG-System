@@ -19,6 +19,24 @@ export interface Document {
   error_message: string;
   /** Seconds to complete all 3 pipelines; null if ingestion never completed. */
   ingestion_duration_seconds?: number | null;
+  ingestion_type?: string;
+  audit_result?: {
+    audit_metadata?: {
+      screen_id?: string;
+      evaluation_standard?: string;
+      overall_compliance_status?: string;
+    };
+    detected_violations?: {
+      guideline_reference?: string;
+      issue_description?: string;
+      severity?: string;
+      element_type?: string;
+      suggested_fix?: string;
+    }[];
+    generative_synthesis?: {
+      compliance_summary?: string;
+    };
+  } | null;
 }
 
 export interface DocumentListResponse {

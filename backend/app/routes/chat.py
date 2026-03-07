@@ -538,6 +538,104 @@ def _build_effective_query(user_query: str, msgs: list[dict]) -> str:
     )
 
 
+_COMPLIANCE_QUERY_KEYWORDS = (
+    "compliance",
+    "wcag",
+    "accessibility",
+    "violation",
+    "violates",
+    "non-compliant",
+    "non compliant",
+    "audit",
+    "screen",
+    "screenshot",
+    "ui",
+    "contrast",
+    "focus",
+    "alt text",
+)
+
+
+def _is_compliance_query(text: str) -> bool:
+    t = (text or "").lower()
+    return any(k in t for k in _COMPLIANCE_QUERY_KEYWORDS)
+
+
+async def _append_screenshot_audit_context(
+    db: AsyncSession,
+    user_query: str,
+    effective_query: str,
+    *,
+    max_documents: int = 3,
+    max_violations_per_doc: int = 8,
+) -> tuple[str, dict]:
+    """
+    For compliance-style queries, append stored screenshot audit results to the
+    prompt so the answer reliably surfaces detected WCAG failures.
+    """
+    if not _is_compliance_query(user_query):
+        return effective_query, {}
+
+    result = await db.execute(
+        select(Document)
+        .where(
+            Document.ingestion_type == "screenshot",
+            Document.audit_result.is_not(None),
+        )
+        .order_by(Document.updated_at.desc())
+        .limit(max_documents)
+    )
+    screenshot_docs = list(result.scalars().all())
+    if not screenshot_docs:
+        return effective_query, {"screenshot_audits_found": 0}
+
+    blocks: list[str] = []
+    total_violations = 0
+    for doc in screenshot_docs:
+        try:
+            audit = json.loads(doc.audit_result or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        violations = audit.get("detected_violations") or []
+        if not isinstance(violations, list):
+            violations = []
+        status = (
+            (audit.get("audit_metadata") or {}).get("overall_compliance_status")
+            if isinstance(audit.get("audit_metadata"), dict)
+            else None
+        ) or "Unknown"
+        lines = [f"Screenshot: {doc.filename}", f"Overall status: {status}"]
+        for i, v in enumerate(violations[:max_violations_per_doc], start=1):
+            if not isinstance(v, dict):
+                continue
+            ref = (v.get("guideline_reference") or "").strip() or "WCAG reference not provided"
+            issue = (v.get("issue_description") or "").strip()
+            fix = (v.get("suggested_fix") or "").strip()
+            lines.append(f"{i}. {ref}")
+            if issue:
+                lines.append(f"   Issue: {issue}")
+            if fix:
+                lines.append(f"   Suggested fix: {fix}")
+        total_violations += len(violations)
+        blocks.append("\n".join(lines))
+
+    if not blocks:
+        return effective_query, {"screenshot_audits_found": 0}
+
+    injected = (
+        f"{effective_query}\n\n"
+        "Use the stored screenshot UI audit findings below as high-priority evidence. "
+        "When asked what failed, explicitly enumerate the violations and explain why each is non-compliant.\n\n"
+        "Stored Screenshot WCAG Audit Findings:\n"
+        f"{'\n\n---\n\n'.join(blocks)}"
+    )
+    meta = {
+        "screenshot_audits_found": len(blocks),
+        "screenshot_violations_indexed": total_violations,
+    }
+    return injected, meta
+
+
 @router.get("/session-state")
 async def get_session_state():
     """Return current chat session state (last selected model). Resets on server restart."""
@@ -670,6 +768,9 @@ async def send_message(
     config.GENERATION_OPTIONS["temperature"] = req.temperature
     rag = get_rag()
     effective_query = _build_effective_query(req.content, msgs)
+    effective_query, screenshot_audit_meta = await _append_screenshot_audit_context(
+        db, req.content, effective_query
+    )
     result = await asyncio.get_event_loop().run_in_executor(
         None,
         lambda: rag.query(
@@ -687,6 +788,8 @@ async def send_message(
     # Citation-first: references and superscripts derived only from what the answer actually cites
     answer = _normalize_markdown_headings(result.get("answer", ""))
     meta = dict(result.get("metadata", {}))
+    if screenshot_audit_meta:
+        meta["screenshot_audit_context"] = screenshot_audit_meta
     loop = asyncio.get_event_loop()
     cited_answer, meta["sources"] = await _build_citations_and_sources(
         answer, rag, db, loop, max_sources=10

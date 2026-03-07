@@ -12,6 +12,9 @@ import {
   updateChatSession,
   getChatSessionState,
   getSystemHealth,
+  uploadDocuments,
+  startIngestion,
+  getDocument,
 } from "@/lib/api";
 import type { ChatSession, ChatMessage } from "@/lib/types";
 import ChatPanel from "@/components/chat/ChatPanel";
@@ -31,6 +34,7 @@ export default function ChatPage() {
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [backendUnavailable, setBackendUnavailable] = useState(false);
+  const [uploadingFiles, setUploadingFiles] = useState(false);
   // Response mode: fast = vector + LLM only; deeper = full adaptive RAG
   const [responseMode, setResponseMode] = useState<"fast" | "deeper">("deeper");
   // Deeper Thinking toggles (only apply when responseMode === "deeper")
@@ -175,6 +179,144 @@ export default function ChatPage() {
     }
   };
 
+  const handleUploadFiles = async (files: File[]) => {
+    if (!activeSession || files.length === 0) return;
+    setUploadingFiles(true);
+    try {
+      const uploadedDocs = await uploadDocuments(files);
+      const documentIds = uploadedDocs.map((d) => d.id);
+      if (documentIds.length > 0) {
+        await startIngestion(documentIds, ["pageindex", "contextual", "graph"]);
+      }
+
+      const filenames = uploadedDocs.map((d) => d.filename).slice(0, 3);
+      const extraCount = Math.max(0, uploadedDocs.length - filenames.length);
+      const summary = filenames.join(", ");
+      const isImage = files.some((f) =>
+        /\.(png|jpg|jpeg)$/i.test(f.name)
+      );
+      const msg: ChatMessage = {
+        role: "assistant",
+        content:
+          uploadedDocs.length > 0
+            ? `Uploaded ${uploadedDocs.length} file(s): ${summary}${extraCount > 0 ? ` (+${extraCount} more)` : ""}. Ingestion started (PageIndex + Vector + Graph).${isImage ? " Running VLM UI analysis and WCAG compliance audit..." : ""}`
+            : "No supported files were uploaded.",
+        trace: [],
+        metadata: {},
+        route: "",
+      };
+      setMessages((prev) => [...prev, msg]);
+      await fetchSessions();
+
+      if (isImage && documentIds.length > 0) {
+        pollForAuditResults(documentIds, uploadedDocs.map((d) => d.filename));
+      }
+    } catch (err) {
+      const msg: ChatMessage = {
+        role: "assistant",
+        content: `Upload failed: ${(err as Error).message}`,
+        trace: [],
+        metadata: {},
+        route: "",
+      };
+      setMessages((prev) => [...prev, msg]);
+    } finally {
+      setUploadingFiles(false);
+    }
+  };
+
+  const pollForAuditResults = (docIds: number[], filenames: string[]) => {
+    const POLL_INTERVAL = 6000;
+    const MAX_POLLS = 80; // ~8 minutes max
+    let polls = 0;
+
+    const timer = setInterval(async () => {
+      polls++;
+      if (polls > MAX_POLLS) {
+        clearInterval(timer);
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: "WCAG audit timed out waiting for results. You can ask about compliance anytime and the system will check for stored audit results.",
+            trace: [],
+            metadata: {},
+            route: "",
+          },
+        ]);
+        return;
+      }
+
+      try {
+        for (let i = 0; i < docIds.length; i++) {
+          const doc = await getDocument(docIds[i]);
+
+          // Audit result available — render it
+          if (doc.audit_result) {
+            clearInterval(timer);
+            const audit = doc.audit_result;
+            const status = audit.audit_metadata?.overall_compliance_status ?? "Unknown";
+            const violations = audit.detected_violations ?? [];
+            const synthesis = audit.generative_synthesis?.compliance_summary ?? "";
+
+            let content = `## WCAG Compliance Audit: ${filenames[i]}\n\n`;
+            content += `**Overall Status: ${status}**\n\n`;
+
+            if (violations.length > 0) {
+              content += `### ${violations.length} Violation(s) Detected\n\n`;
+              for (const v of violations) {
+                const sev = v.severity ? ` [${v.severity.toUpperCase()}]` : "";
+                content += `**${v.guideline_reference || "WCAG"}**${sev}\n`;
+                if (v.issue_description) content += `${v.issue_description}\n`;
+                if (v.element_type) content += `Element: ${v.element_type}\n`;
+                if (v.suggested_fix) content += `Fix: ${v.suggested_fix}\n`;
+                content += "\n";
+              }
+            } else {
+              content += "No violations detected.\n\n";
+            }
+
+            if (synthesis) {
+              content += `### Summary\n${synthesis}\n`;
+            }
+
+            setMessages((prev) => [
+              ...prev,
+              {
+                role: "assistant",
+                content,
+                trace: [],
+                metadata: { audit_document_id: docIds[i] },
+                route: "WCAG_AUDIT",
+              },
+            ]);
+            return;
+          }
+
+          // Ingestion finished but no audit result — audit failed or not applicable
+          const done = doc.status === "ready" || doc.status === "error";
+          if (done && !doc.audit_result) {
+            clearInterval(timer);
+            const errMsg = doc.error_message ? ` Error: ${doc.error_message}` : "";
+            setMessages((prev) => [
+              ...prev,
+              {
+                role: "assistant",
+                content: `WCAG compliance audit for **${filenames[i]}** did not return results — the VLM returned an empty response after retrying. You can try re-uploading the image, or ask about WCAG compliance and the system will use the stored UI description and WCAG knowledge base to answer.${errMsg}`,
+                trace: [],
+                metadata: {},
+                route: "",
+              },
+            ]);
+            return;
+          }
+        }
+      } catch {
+        // backend may be busy — just keep polling
+      }
+    }, POLL_INTERVAL);
+  };
+
   return (
     <div className="flex h-full flex-col">
       {backendUnavailable && (
@@ -265,6 +407,8 @@ export default function ChatPage() {
           <ChatPanel
             messages={messages}
             onSend={handleSend}
+            onUploadFiles={handleUploadFiles}
+            uploadingFiles={uploadingFiles}
             onSetPreference={handleSetPreference}
             loading={loading}
             forceRoute={forceRoute}

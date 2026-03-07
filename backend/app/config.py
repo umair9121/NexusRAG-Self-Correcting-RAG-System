@@ -42,10 +42,15 @@ FIGURES_DIR = STORAGE_DIR / "figures"
 CHROMA_GRAPH_DIR = STORAGE_DIR / "chroma_graph"
 KNOWLEDGE_BASE_DIR = STORAGE_DIR / "knowledge_base"
 UI_AUDIT_DIR = STORAGE_DIR / "ui_audits"
+EXTRACTION_DIR = STORAGE_DIR / "extractions"
 DATABASE_PATH = STORAGE_DIR / "rag_system.db"
 
+# WCAG reference data (auto-ingested at startup for screenshot compliance analysis)
+WCAG_DATA_PATH = PROJECT_ROOT / "wcag_data.json"
+WCAG_DOC_STEM = "wcag_data"
+
 # Ensure dirs exist
-for d in [DATA_DIR, STORAGE_DIR, CHROMA_DIR, CHROMA_GRAPH_DIR, PAGEINDEX_DIR, PDF_IMAGES_DIR, GRAPH_DIR, FIGURES_DIR, KNOWLEDGE_BASE_DIR, UI_AUDIT_DIR]:
+for d in [DATA_DIR, STORAGE_DIR, CHROMA_DIR, CHROMA_GRAPH_DIR, PAGEINDEX_DIR, PDF_IMAGES_DIR, GRAPH_DIR, FIGURES_DIR, KNOWLEDGE_BASE_DIR, UI_AUDIT_DIR, EXTRACTION_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 # ── Import folder path tags ──────────────────────────────────────────────────
@@ -84,6 +89,9 @@ EMBEDDING_MODEL = _DEFAULT_EMBEDDING_MODEL if _is_vlm_not_embedding else _raw_em
 # Dimension for embedding model; must match the model or ChromaDB will reject embeddings.
 EMBEDDING_DIMENSION = 4096
 VLM_MODEL = os.getenv("VLM_MODEL", "qwen3-vl:2b")
+
+# VLM max tokens for image description generation
+VLM_MAX_NEW_TOKENS = int(os.getenv("VLM_MAX_NEW_TOKENS", "1024"))
 
 # ── Inference Parameters ────────────────────────────────────────────────────
 # num_ctx 8192–16384 to avoid silent prompt truncation during extraction and generation.
@@ -192,7 +200,9 @@ PDF_TRIAGE_ENABLED = os.getenv("PDF_TRIAGE_ENABLED", "true").strip().lower() in 
 USE_VLM_VISUAL_ANSWER = os.getenv("USE_VLM_VISUAL_ANSWER", "true").strip().lower() in ("true", "1", "yes")
 
 # ── Ollama Client Settings ──────────────────────────────────────────────────
-# None = no timeout (wait indefinitely for Ollama). Set to an int (seconds) to cap wait time.
-OLLAMA_TIMEOUT: int | None = None
+# Per-request timeout in seconds. Small models finish quickly but large prompts
+# or slow hardware can take minutes; 300s is generous enough to avoid false
+# timeouts while preventing indefinite hangs.
+OLLAMA_TIMEOUT: int | None = int(os.getenv("OLLAMA_TIMEOUT", "300"))
 OLLAMA_MAX_RETRIES = 3
 OLLAMA_RETRY_DELAY = 2

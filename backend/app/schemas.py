@@ -275,6 +275,7 @@ class DetectedViolation(BaseModel):
     severity: str = "medium"       # low | medium | high | critical
     bounding_box: BoundingBox | None = None
     element_type: str = ""         # e.g. "button", "text", "image"
+    wcag_technique: str = ""       # the specific WCAG technique/test procedure that applies
     suggested_fix: str = ""
 
 
@@ -288,6 +289,7 @@ class AuditMetadata(BaseModel):
 class GenerativeSynthesis(BaseModel):
     global_edit_prompt: str = ""
     negative_prompt: str = ""
+    compliance_summary: str = ""
 
 
 class UIAuditResult(BaseModel):

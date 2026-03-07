@@ -11,6 +11,7 @@ downstream PageIndex tree-building can preserve page numbers.
 from __future__ import annotations
 
 import base64
+import io
 import json
 import logging
 import re
@@ -19,10 +20,31 @@ from typing import Any
 
 import fitz  # PyMuPDF – used to render PDF pages to images
 import requests
+from PIL import Image
 
 from app import config
 
 logger = logging.getLogger(__name__)
+
+
+# ── Ollama VRAM management ──────────────────────────────────────────────────
+
+def unload_vlm_from_vram() -> None:
+    """Ask Ollama to immediately unload the VLM from VRAM (keep_alive=0).
+
+    Call this after the last VLM inference before switching to the
+    embedding model so VRAM is freed and the embedding model can load
+    without contention.
+    """
+    try:
+        requests.post(
+            f"{config.OLLAMA_BASE_URL}/api/generate",
+            json={"model": config.VLM_MODEL, "prompt": "", "keep_alive": 0},
+            timeout=15,
+        )
+        logger.info("Unloaded %s from VRAM (keep_alive=0)", config.VLM_MODEL)
+    except Exception as exc:
+        logger.debug("VLM unload request failed (non-critical): %s", exc)
 
 
 # ── Heuristic: should we fall back to the VLM? ─────────────────────────────
@@ -132,12 +154,173 @@ def _pdf_page_to_base64(
 
 
 def _image_file_to_base64(image_path: str | Path) -> str:
-    """Read an image file (.png, .jpg, .jpeg) and return base64-encoded string."""
+    """Read/resize an image file and return base64-encoded string.
+
+    Large screenshots can trigger Ollama 500 errors (OOM/context pressure). We
+    downscale to a safer long side before encoding while preserving readability.
+    """
     path = Path(image_path)
     if not path.exists():
         return ""
-    with open(path, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
+    try:
+        with Image.open(path) as img:
+            img = img.convert("RGB")
+            max_long_side = 1280
+            w, h = img.size
+            long_side = max(w, h)
+            if long_side > max_long_side:
+                scale = max_long_side / float(long_side)
+                img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
+            buf = io.BytesIO()
+            # JPEG keeps payload small for VLM calls and avoids 500s on large images.
+            img.save(buf, format="JPEG", quality=88, optimize=True)
+            return base64.b64encode(buf.getvalue()).decode("utf-8")
+    except Exception:
+        with open(path, "rb") as f:
+            return base64.b64encode(f.read()).decode("utf-8")
+
+
+def _extract_json_from_text(text: str) -> str | None:
+    """Find and extract a JSON object from text that may have preamble/commentary.
+
+    qwen3-vl often emits chain-of-thought reasoning before the actual
+    JSON output.  This scans for the first top-level ``{`` and last ``}``
+    and attempts to parse the substring as JSON.  Returns the cleaned
+    JSON string on success, or None if no valid JSON was found.
+    """
+    if not text:
+        return None
+    # Strip markdown code fences first
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```\w*\n?", "", cleaned)
+        cleaned = re.sub(r"\n?```\s*$", "", cleaned)
+
+    # Fast path: already valid JSON
+    stripped = cleaned.strip()
+    if stripped.startswith("{"):
+        try:
+            json.loads(stripped)
+            return stripped
+        except json.JSONDecodeError:
+            pass
+
+    # Find the first '{' and last '}' — the JSON object may be buried in text
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+    if first_brace != -1 and last_brace > first_brace:
+        candidate = text[first_brace:last_brace + 1]
+        try:
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
+
+def _extract_chat_text(body: dict[str, Any]) -> str:
+    """Extract generated text from an Ollama /api/chat response.
+
+    qwen3-vl may place its main output in ``message.content``, in
+    ``message.thinking`` / ``message.reasoning_content``, or in the
+    top-level ``response`` key depending on Ollama version and model
+    variant.  We check all known locations.
+    """
+    msg = body.get("message") or {}
+    content = msg.get("content")
+    if isinstance(content, str) and content.strip():
+        return content.strip()
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"].strip():
+                return part["text"].strip()
+    response = body.get("response")
+    if isinstance(response, str) and response.strip():
+        return response.strip()
+    reasoning = msg.get("reasoning_content") or msg.get("thinking")
+    if isinstance(reasoning, str) and reasoning.strip():
+        return reasoning.strip()
+    if isinstance(body.get("thinking"), str) and body["thinking"].strip():
+        return body["thinking"].strip()
+    return ""
+
+
+def _post_chat_with_fallback(
+    payload: dict[str, Any],
+    callback: Any | None = None,
+    purpose: str = "VLM",
+) -> str:
+    """Call Ollama /api/chat with fallback num_ctx values for robustness."""
+    option_template = dict(payload.get("options") or {})
+    fallback_ctx = [option_template.get("num_ctx", 4096), 2048, 1024]
+    seen: set[int] = set()
+    ctx_values = [c for c in fallback_ctx if isinstance(c, int) and c > 0 and not (c in seen or seen.add(c))]
+    last_error = ""
+
+    for i, num_ctx in enumerate(ctx_values, start=1):
+        attempt_payload = dict(payload)
+        attempt_opts = dict(option_template)
+        attempt_opts["num_ctx"] = num_ctx
+        if i > 1 and isinstance(attempt_opts.get("num_predict"), int):
+            attempt_opts["num_predict"] = max(128, int(attempt_opts["num_predict"]) // 2)
+        attempt_payload["options"] = attempt_opts
+        try:
+            resp = requests.post(
+                f"{config.OLLAMA_BASE_URL}/api/chat",
+                json=attempt_payload,
+                timeout=config.OLLAMA_TIMEOUT,
+            )
+            if resp.status_code >= 400:
+                body = (resp.text or "").strip()
+                last_error = f"{resp.status_code} {body[:300]}"
+                logger.warning("%s call failed (num_ctx=%s): %s", purpose, num_ctx, last_error)
+                if callback:
+                    callback(f"{purpose} retrying with lower context (num_ctx={num_ctx})...")
+                continue
+            parsed = resp.json()
+            text = _extract_chat_text(parsed)
+            if text:
+                return text
+            last_error = "empty response content"
+            logger.warning(
+                "%s empty content diagnostic (status=200): keys=%s message.keys=%s",
+                purpose, list(parsed.keys()), list((parsed.get("message") or {}).keys()),
+            )
+        except Exception as exc:
+            last_error = str(exc)
+            logger.warning("%s call exception (num_ctx=%s): %s", purpose, num_ctx, exc)
+
+    # Fallback: /api/generate can sometimes succeed where /api/chat does not
+    try:
+        user_msg = {}
+        for m in payload.get("messages", []):
+            if m.get("role") == "user":
+                user_msg = m
+        gen_payload = {
+            "model": payload.get("model"),
+            "prompt": (user_msg.get("content") or "").strip(),
+            "images": user_msg.get("images") or [],
+            "stream": False,
+            "options": option_template,
+        }
+        resp = requests.post(
+            f"{config.OLLAMA_BASE_URL}/api/generate",
+            json=gen_payload,
+            timeout=config.OLLAMA_TIMEOUT,
+        )
+        if resp.status_code < 400:
+            parsed = resp.json()
+            text = _extract_chat_text(parsed)
+            if text:
+                logger.info("%s succeeded via /api/generate fallback", purpose)
+                return text
+    except Exception as exc:
+        last_error = f"/api/generate fallback: {exc}"
+
+    if callback and last_error:
+        callback(f"{purpose} failed: {last_error}")
+    return ""
 
 
 def extract_text_with_vlm_image(
@@ -178,22 +361,33 @@ def extract_text_with_vlm_image(
         "stream": False,
         "options": {"temperature": 0.1, "num_ctx": 4096},
     }
-    try:
-        resp = requests.post(
-            f"{config.OLLAMA_BASE_URL}/api/chat",
-            json=payload,
-            timeout=config.OLLAMA_TIMEOUT,
-        )
-        resp.raise_for_status()
-        text = resp.json().get("message", {}).get("content", "").strip()
-        if callback and text:
-            callback(f"VLM extracted {len(text)} chars from image")
-        return text
-    except Exception as exc:
-        logger.warning("VLM image extraction failed: %s", exc)
+    text = _post_chat_with_fallback(payload, callback=callback, purpose="VLM image extraction")
+    # If the general VLM yields nothing, fall back to OCR_MODEL for text-centric extraction.
+    ocr_model = (getattr(config, "OCR_MODEL", "") or "").strip()
+    if (not text) and ocr_model and ocr_model != config.VLM_MODEL:
         if callback:
-            callback(f"VLM failed: {exc}")
-        return ""
+            callback(f"No text from {config.VLM_MODEL}; retrying with OCR model {ocr_model}…")
+        ocr_payload: dict[str, Any] = {
+            "model": ocr_model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        "Extract all readable text visible in this image. "
+                        "Output only extracted text in plain Markdown."
+                    ),
+                    "images": [img_b64],
+                },
+            ],
+            "stream": False,
+            "options": {"temperature": 0.0, "num_ctx": 2048},
+        }
+        text = _post_chat_with_fallback(
+            ocr_payload, callback=callback, purpose="OCR-model image extraction"
+        )
+    if callback and text:
+        callback(f"VLM extracted {len(text)} chars from image")
+    return text
 
 
 # ── Core extraction ─────────────────────────────────────────────────────────
@@ -278,12 +472,7 @@ def extract_text_with_vlm(
             )
             resp.raise_for_status()
 
-            text = (
-                resp.json()
-                .get("message", {})
-                .get("content", "")
-                .strip()
-            )
+            text = _extract_chat_text(resp.json())
 
             if text:
                 all_page_texts.append((page_num, text))
@@ -375,7 +564,7 @@ def generate_answer_with_images(
             timeout=config.OLLAMA_TIMEOUT,
         )
         resp.raise_for_status()
-        answer = resp.json().get("message", {}).get("content", "").strip()
+        answer = _extract_chat_text(resp.json())
         logger.info("vlm.generate_answer_with_images: success answer_len=%d", len(answer))
         if callback and answer:
             callback("VLM answer generated")
@@ -428,7 +617,7 @@ def caption_image_with_vlm(
             timeout=config.OLLAMA_TIMEOUT,
         )
         resp.raise_for_status()
-        caption = resp.json().get("message", {}).get("content", "").strip()
+        caption = _extract_chat_text(resp.json())
         if callback and caption:
             callback("VLM figure caption generated")
         return caption
@@ -494,7 +683,7 @@ def get_per_page_visual_summaries(
                 timeout=config.OLLAMA_TIMEOUT,
             )
             resp.raise_for_status()
-            summary = resp.json().get("message", {}).get("content", "").strip()
+            summary = _extract_chat_text(resp.json())
             if summary:
                 results.append((page_num, summary))
         except Exception as exc:
@@ -510,12 +699,9 @@ def get_per_page_visual_summaries(
 # ── Screen Object Model (SOM) for UI screenshots (Enrico, MUD, MobileViews) ───
 
 _SOM_SYSTEM_PROMPT = (
-    "You are a UI analyst. Your task is to produce a Screen Object Model (SOM): "
-    "a hierarchical, machine-readable description of the interface. "
-    "For each visible component, output: type (button, text, image, input, container, etc.), "
-    "text content if any, approximate position (e.g. top/center/bottom, left/right), "
-    "parent-child relationships, and any accessibility-related attributes (e.g. label presence, contrast). "
-    "Output ONLY valid JSON. No commentary, no markdown fences."
+    "You are a UI analyst. Produce a Screen Object Model (SOM) as a JSON object. "
+    "For each visible component include: type, text content, approximate position, "
+    "and accessibility-related attributes."
 )
 
 _SOM_OUTPUT_SCHEMA = {
@@ -576,38 +762,39 @@ def extract_screen_object_model(
     if callback:
         callback("Extracting Screen Object Model (SOM) from screenshot…")
 
-    user_content = (
-        "Analyze this UI screenshot and produce a Screen Object Model (SOM) as JSON. "
-        "Include: (1) screen_type (e.g. login, list, settings), (2) components_flat: array of every visible component with "
-        "id, type (button, text, image, input, etc.), text (visible label/caption), bounds (left, top, width, height in normalized 0–1 or pixels), "
-        "accessibility_label (if inferable), parent_id. Describe spatial relationships (above, below, inside). "
-        "Output ONLY valid JSON with keys screen_type and components_flat."
+    prompt = (
+        "Produce a JSON SOM for this screenshot with keys: "
+        "screen_type (string), components_flat (array of "
+        "{id, type, text, bounds:{left,top,width,height}, accessibility_label, parent_id})."
     )
     if view_hierarchy_json:
-        user_content += "\n\nOptional view hierarchy metadata (use to refine structure):\n" + json.dumps(view_hierarchy_json)[:2000]
+        prompt += "\nView hierarchy hint:\n" + json.dumps(view_hierarchy_json)[:1500]
 
     payload: dict[str, Any] = {
         "model": config.VLM_MODEL,
-        "messages": [
-            {"role": "system", "content": _SOM_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content, "images": [img_b64]},
-        ],
+        "prompt": prompt,
+        "images": [img_b64],
+        "format": "json",
         "stream": False,
-        "options": {"temperature": 0.1, "num_ctx": 8192},
+        "options": {"temperature": 0.1, "num_ctx": 4096, "num_predict": 1024},
     }
     try:
         resp = requests.post(
-            f"{config.OLLAMA_BASE_URL}/api/chat",
+            f"{config.OLLAMA_BASE_URL}/api/generate",
             json=payload,
             timeout=config.OLLAMA_TIMEOUT,
         )
         resp.raise_for_status()
-        raw = resp.json().get("message", {}).get("content", "").strip()
-        # Strip markdown code fence if present
-        if raw.startswith("```"):
-            raw = re.sub(r"^```\w*\n?", "", raw)
-            raw = re.sub(r"\n?```\s*$", "", raw)
-        out = json.loads(raw) if raw else {}
+        raw = (resp.json().get("response") or "").strip()
+        if callback:
+            callback(f"SOM VLM response: {len(raw)} chars")
+        json_str = _extract_json_from_text(raw)
+        if not json_str:
+            logger.warning("SOM response has no valid JSON (len=%d): %.200s", len(raw), raw)
+            if callback:
+                callback("SOM response contained no valid JSON — skipping")
+            return {}
+        out = json.loads(json_str)
         if callback and out:
             callback(f"SOM extracted: {len(out.get('components_flat', []))} components")
         return out
@@ -618,30 +805,308 @@ def extract_screen_object_model(
         return {}
 
 
-# ── UI compliance audit (WCAG / HIPAA); output matches UIAuditResult schema ──
+# ── WCAG-grounded UI compliance audit ────────────────────────────────────────
 
 _UI_AUDIT_SYSTEM_PROMPT = (
-    "You are an accessibility and regulatory compliance auditor for digital interfaces. "
-    "Evaluate the screenshot against WCAG 2.2 Level AA and, when relevant, HIPAA technical safeguards. "
-    "For each violation: provide guideline_reference (e.g. 'WCAG 2.2 Success Criterion 1.4.3'), "
-    "issue_description, severity (low|medium|high|critical), bounding_box (left, top, width, height; normalized 0–1), "
-    "element_type, and suggested_fix. Output ONLY valid JSON matching the required schema. No markdown, no commentary."
+    "You are a WCAG 2.2 compliance auditor. Analyze the UI against the provided WCAG criteria. "
+    "For each violation cite the WCAG criterion, describe the issue, rate severity, and suggest a fix. "
+    "Respond as a JSON object."
 )
+
+
+def retrieve_wcag_context_for_ui(
+    ui_description: str,
+    callback: Any | None = None,
+) -> str:
+    """Query the ingested WCAG data (vector + graph) using the UI description
+    to retrieve the most relevant success criteria, techniques, and test procedures.
+
+    Returns a combined string of WCAG reference text suitable for grounding the audit.
+    """
+    import time as _time
+    from app.modules.ollama_client import OllamaClient
+    from app.modules.contextual import _get_chroma_collection, DocStore
+    from app.modules.graph import GraphSearcher
+
+    wcag_stem = config.WCAG_DOC_STEM
+    llm = OllamaClient()
+    context_parts: list[str] = []
+
+    # Keep the query short — long queries slow down embedding models drastically
+    wcag_query = (
+        "WCAG 2.2 accessibility: contrast, text alternatives, focus indicators, "
+        "touch targets, keyboard, color, form labels, error identification, navigation"
+    )
+
+    # Vector search against WCAG chunks (filtered by doc_name)
+    try:
+        if callback:
+            callback("Embedding WCAG query for vector search…")
+        t0 = _time.monotonic()
+        query_embedding = llm.embed(wcag_query)
+        embed_ms = int((_time.monotonic() - t0) * 1000)
+        if callback:
+            callback(f"WCAG query embedded in {embed_ms}ms")
+        if query_embedding:
+            collection = _get_chroma_collection()
+            results = collection.query(
+                query_embeddings=query_embedding,
+                n_results=10,
+                where={"doc_name": wcag_stem},
+                include=["documents", "metadatas", "distances"],
+            )
+            docstore = DocStore()
+            if results and results.get("ids") and results["ids"][0]:
+                for i, doc_id in enumerate(results["ids"][0]):
+                    parent = docstore.get(doc_id)
+                    text = parent["text"] if parent else (results["documents"][0][i] or "")
+                    text = text.strip()
+                    if text:
+                        context_parts.append(text)
+                if callback:
+                    callback(f"Retrieved {len(results['ids'][0])} WCAG vector chunks")
+            else:
+                if callback:
+                    callback("No WCAG vector chunks found (collection may be empty for this doc)")
+    except Exception as exc:
+        logger.warning("WCAG vector search failed: %s", exc)
+        if callback:
+            callback(f"WCAG vector search failed: {exc}")
+
+    # Graph search for entity/relationship context
+    try:
+        graph_file = f"{wcag_stem}_graph.json"
+        if (config.GRAPH_DIR / graph_file).exists():
+            if callback:
+                callback("Searching WCAG knowledge graph…")
+            gs = GraphSearcher(llm)
+            gs.load_graph(wcag_stem)
+            graph_result = gs.search(
+                wcag_query,
+                mode="local",
+                doc_name=wcag_stem,
+            )
+            graph_ctx = (graph_result.get("context") or "").strip()
+            if graph_ctx:
+                context_parts.append(graph_ctx)
+                if callback:
+                    callback(f"Retrieved WCAG graph context ({len(graph_ctx)} chars)")
+        else:
+            if callback:
+                callback("WCAG graph not found — skipping graph search")
+    except Exception as exc:
+        logger.warning("WCAG graph search failed: %s", exc)
+        if callback:
+            callback(f"WCAG graph search failed: {exc}")
+
+    combined = "\n\n---\n\n".join(context_parts)
+    if callback:
+        callback(f"Total WCAG context: {len(combined)} chars from {len(context_parts)} sources")
+    return combined
+
+
+def _build_audit_from_freetext(raw: str, evaluation_standard: str) -> dict[str, Any]:
+    """Parse a free-text VLM audit response into the structured audit dict.
+
+    When format:json fails and the VLM returns prose, this extracts whatever
+    violation information it can from the text and wraps it in the expected
+    audit schema so downstream code works identically.
+    """
+    violations: list[dict[str, str]] = []
+    lines = raw.split("\n")
+    current: dict[str, str] = {}
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        low = stripped.lower()
+        # Detect numbered violation lines or lines referencing WCAG SC
+        sc_match = re.search(r'(\d+\.\d+\.\d+)', stripped)
+        if sc_match or any(kw in low for kw in ("violation", "issue", "fail", "non-compliant", "does not meet")):
+            if current.get("issue_description"):
+                violations.append(current)
+            current = {
+                "guideline_reference": sc_match.group(1) if sc_match else "",
+                "issue_description": stripped,
+                "severity": "needs review",
+                "element_type": "",
+                "suggested_fix": "",
+            }
+        elif current and any(kw in low for kw in ("fix", "remediat", "suggest", "recommend", "solution")):
+            current["suggested_fix"] = stripped
+        elif current and any(kw in low for kw in ("contrast", "color", "alt", "label", "focus", "touch", "target", "keyboard", "heading", "navigation")):
+            if not current["element_type"]:
+                current["element_type"] = stripped
+            else:
+                current["issue_description"] += " " + stripped
+        elif current:
+            current["issue_description"] += " " + stripped
+    if current.get("issue_description"):
+        violations.append(current)
+
+    status = "Needs Review"
+    if not violations:
+        status = "Could Not Determine"
+    elif len(violations) >= 3:
+        status = "Non-Compliant"
+
+    return {
+        "audit_metadata": {
+            "overall_compliance_status": status,
+            "evaluation_standard": evaluation_standard,
+            "parse_mode": "freetext_fallback",
+        },
+        "detected_violations": violations,
+        "generative_synthesis": {
+            "compliance_summary": raw[:1500],
+        },
+    }
+
+
+def run_text_only_compliance_audit(
+    ui_description: str,
+    som_json: dict[str, Any] | None = None,
+    *,
+    evaluation_standard: str = "WCAG 2.2 Level AA",
+    callback: Any | None = None,
+) -> dict[str, Any]:
+    """WCAG compliance audit using ONLY text (no image VLM call).
+
+    This is a robustness fallback for environments where the small VLM model
+    cannot reliably produce JSON (or any output) for the screenshot audit.
+
+    It reuses the same WCAG retrieval pipeline as the VLM audit but hands
+    everything to the main LLM (config.LLM_MODEL) as a text-only task.
+    """
+    from app.modules.ollama_client import OllamaClient
+
+    ui_description = (ui_description or "").strip()
+    if not ui_description:
+        return {}
+
+    import time as _time
+
+    if callback:
+        callback("Running text-only WCAG compliance audit (no image VLM)…")
+
+    regulatory_context: str | None = ""
+    t_retrieval = _time.monotonic()
+    try:
+        regulatory_context = retrieve_wcag_context_for_ui(ui_description, callback)
+    except Exception as exc:
+        logger.warning("WCAG text-only context retrieval failed: %s", exc)
+        if callback:
+            callback(f"WCAG text-only retrieval failed: {exc}")
+        regulatory_context = ""
+    retrieval_s = _time.monotonic() - t_retrieval
+    if callback:
+        callback(
+            f"WCAG text-only retrieval step done in {retrieval_s:.1f}s "
+            f"({len(regulatory_context or '')} chars)"
+        )
+
+    ui_desc_limit = 2000
+    wcag_ctx_limit = 4000
+    som_limit = 1200
+
+    system_msg = (
+        "You are an accessibility expert performing a WCAG compliance audit. "
+        "Use the provided WCAG reference snippets carefully and be precise "
+        "about which success criteria are violated."
+    )
+
+    prompt = (
+        f"Audit this UI for {evaluation_standard} compliance based ONLY on the text description.\n\n"
+        "UI Description:\n"
+        f"{ui_description[:ui_desc_limit]}\n\n"
+    )
+    if regulatory_context:
+        prompt += (
+            "Relevant WCAG reference (snippets from the WCAG knowledge base):\n"
+            f"{regulatory_context[:wcag_ctx_limit]}\n\n"
+        )
+    if som_json:
+        prompt += (
+            "Screen Object Model (JSON describing components on the screen):\n"
+            f"{json.dumps(som_json)[:som_limit]}\n\n"
+        )
+
+    prompt += (
+        "Return a JSON object with these keys:\n"
+        '- "audit_metadata": {"overall_compliance_status": "Compliant" or "Non-Compliant" or "Needs Review", '
+        '"evaluation_standard": "WCAG 2.2 Level AA"}\n'
+        '- "detected_violations": list of {"guideline_reference": "e.g. 1.4.3", '
+        '"issue_description": "...", "severity": "critical/major/minor", '
+        '"element_type": "...", "suggested_fix": "..."}\n'
+        '- "generative_synthesis": {"compliance_summary": "..."}\n'
+        "List ALL violations you can identify. Be specific about which WCAG success criterion "
+        "each issue violates and why.\n"
+    )
+
+    llm = OllamaClient()
+    try:
+        result = llm.generate_json(
+            prompt,
+            system=system_msg,
+            options={
+                "temperature": 0.2,
+                "num_ctx": max(config.DEFAULT_NUM_CTX, 8192),
+            },
+        )
+    except Exception as exc:
+        logger.warning("run_text_only_compliance_audit failed: %s", exc)
+        if callback:
+            callback(f"Text-only WCAG audit failed: {exc}")
+        return {}
+
+    if not isinstance(result, dict) or not result:
+        return {}
+
+    # Normalise shape to match run_ui_compliance_audit output
+    audit_metadata = result.get("audit_metadata") or {}
+    detected_violations = result.get("detected_violations") or []
+    generative_synthesis = result.get("generative_synthesis") or {}
+
+    if isinstance(audit_metadata, dict):
+        audit_metadata.setdefault("evaluation_standard", evaluation_standard)
+        audit_metadata.setdefault("overall_compliance_status", "Needs Review")
+        audit_metadata.setdefault("parse_mode", "text_only_llm")
+
+    out = {
+        "audit_metadata": audit_metadata,
+        "detected_violations": detected_violations,
+        "generative_synthesis": generative_synthesis,
+    }
+
+    if callback:
+        n = len(detected_violations) if isinstance(detected_violations, list) else 0
+        status = audit_metadata.get("overall_compliance_status", "Unknown")
+        callback(f"Text-only WCAG audit complete: {status}, {n} violation(s) detected")
+
+    return out
 
 
 def run_ui_compliance_audit(
     image_path: str | Path,
+    ui_description: str | None = None,
     som_json: dict[str, Any] | None = None,
     regulatory_context: str | None = None,
     evaluation_standard: str = "WCAG 2.2 Level AA",
     callback: Any | None = None,
 ) -> dict[str, Any]:
     """
-    Run a compliance audit on a UI screenshot. Uses VLM to detect violations and produce
-    audit_metadata, detected_violations (with bounding boxes and guideline_reference), and generative_synthesis.
-    If regulatory_context is provided (e.g. from Graph RAG retrieval), it is included in the prompt
-    to ground guideline_reference and issue_description.
-    Returns a dict suitable for UIAuditResult / audit_result JSON.
+    Run a WCAG-grounded compliance audit on a UI screenshot.
+
+    The audit uses three inputs:
+    1. The screenshot image itself (sent to VLM)
+    2. A rich natural-language UI description from extract_image_description()
+    3. WCAG reference context retrieved via the RAG pipeline from wcag_data.json
+
+    The VLM is asked to cross-reference the UI description against the WCAG
+    criteria to identify specific non-compliant elements and explain why they
+    violate the cited success criteria.
+
+    Returns a dict with audit_metadata, detected_violations, and generative_synthesis.
     """
     path = Path(image_path)
     if not path.exists() or path.suffix.lower() not in (".png", ".jpg", ".jpeg"):
@@ -654,53 +1119,144 @@ def run_ui_compliance_audit(
     if not img_b64:
         return {}
 
+    import time as _time
+
     if callback:
-        callback("Running UI compliance audit (VLM)…")
+        callback("Running WCAG-grounded UI compliance audit…")
 
-    user_content = (
-        f"Evaluate this UI screenshot for accessibility and compliance against {evaluation_standard}. "
-        "Output a JSON object with exactly these keys:\n"
-        "1. audit_metadata: { screen_id (string), timestamp (ISO8601), evaluation_standard (string), overall_compliance_status (Pass|Failed|Partial) }\n"
-        "2. detected_violations: array of { guideline_reference, issue_description, severity, bounding_box (left, top, width, height normalized 0–1), element_type, suggested_fix }\n"
-        "3. generative_synthesis: { global_edit_prompt (instructions to fix the UI for an image model), negative_prompt (what not to change) }\n"
-        "Identify violations with exact coordinates (bounding_box) for each violating element. "
-        "For contrast issues cite WCAG 1.4.3; for non-text content cite 1.1.1; for focus/keyboard cite 2.4.7; for touch targets cite 2.5.5."
-    )
-    if som_json:
-        user_content += "\n\nScreen Object Model (use to locate elements):\n" + json.dumps(som_json)[:3000]
-    if regulatory_context:
-        user_content += "\n\nRelevant regulatory text (use to align guideline_reference and issue_description):\n" + regulatory_context[:4000]
-
-    payload = {
-        "model": config.VLM_MODEL,
-        "messages": [
-            {"role": "system", "content": _UI_AUDIT_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content, "images": [img_b64]},
-        ],
-        "stream": False,
-        "options": {"temperature": 0.1, "num_ctx": 8192},
-    }
-    try:
-        resp = requests.post(
-            f"{config.OLLAMA_BASE_URL}/api/chat",
-            json=payload,
-            timeout=config.OLLAMA_TIMEOUT,
-        )
-        resp.raise_for_status()
-        raw = resp.json().get("message", {}).get("content", "").strip()
-        if raw.startswith("```"):
-            raw = re.sub(r"^```\w*\n?", "", raw)
-            raw = re.sub(r"\n?```\s*$", "", raw)
-        out = json.loads(raw) if raw else {}
-        if callback and out:
-            n = len(out.get("detected_violations", []))
-            callback(f"Audit complete: {out.get('audit_metadata', {}).get('overall_compliance_status', 'Unknown')}, {n} violation(s)")
-        return out
-    except Exception as exc:
-        logger.warning("run_ui_compliance_audit failed: %s", exc)
+    if not regulatory_context and ui_description:
         if callback:
-            callback(f"Audit failed: {exc}")
-        return {}
+            callback("Retrieving relevant WCAG criteria from knowledge base…")
+        t_retrieval = _time.monotonic()
+        try:
+            regulatory_context = retrieve_wcag_context_for_ui(ui_description, callback)
+        except Exception as exc:
+            logger.warning("WCAG context retrieval failed: %s", exc)
+            if callback:
+                callback(f"WCAG retrieval failed: {exc} — proceeding with VLM knowledge only")
+            regulatory_context = ""
+        retrieval_s = _time.monotonic() - t_retrieval
+        if callback:
+            callback(f"WCAG retrieval step done in {retrieval_s:.1f}s ({len(regulatory_context or '')} chars)")
+
+    # Pre-warm the VLM back into VRAM (it was unloaded before WCAG retrieval)
+    try:
+        requests.post(
+            f"{config.OLLAMA_BASE_URL}/api/generate",
+            json={"model": config.VLM_MODEL, "prompt": "hi", "keep_alive": "5m",
+                  "options": {"num_predict": 1}},
+            timeout=30,
+        )
+    except Exception:
+        pass
+
+    if callback:
+        callback("Building WCAG audit prompt for VLM…")
+
+    # Keep prompt concise for small VLMs — truncate context to fit within num_ctx
+    ui_desc_limit = 1500
+    wcag_ctx_limit = 2000
+    som_limit = 800
+    prompt = (
+        f"You are a WCAG accessibility auditor. Analyze this UI screenshot for {evaluation_standard} violations.\n\n"
+    )
+    if ui_description:
+        prompt += f"UI Description:\n{ui_description[:ui_desc_limit]}\n\n"
+    if regulatory_context:
+        prompt += f"Relevant WCAG criteria:\n{regulatory_context[:wcag_ctx_limit]}\n\n"
+    if som_json:
+        prompt += f"Screen Object Model:\n{json.dumps(som_json)[:som_limit]}\n\n"
+
+    json_schema_instruction = (
+        "Return a JSON object with these keys:\n"
+        '- "audit_metadata": {"overall_compliance_status": "Compliant" or "Non-Compliant", "evaluation_standard": "WCAG 2.2 Level AA"}\n'
+        '- "detected_violations": list of {"guideline_reference": "e.g. 1.4.3", "issue_description": "...", "severity": "critical/major/minor", "element_type": "...", "suggested_fix": "..."}\n'
+        '- "generative_synthesis": {"compliance_summary": "..."}\n'
+        "List ALL violations you can identify. Be specific about which WCAG success criterion each violates."
+    )
+    prompt += json_schema_instruction
+
+    prompt_len = len(prompt)
+    if callback:
+        callback(f"Sending WCAG audit prompt to {config.VLM_MODEL} ({prompt_len} chars + image)…")
+    logger.info("run_ui_compliance_audit: prompt_len=%d regulatory_ctx_len=%d som=%s",
+                prompt_len, len(regulatory_context or ""), bool(som_json))
+
+    audit_num_ctx = max(config.DEFAULT_NUM_CTX, 8192)
+
+    # Attempt 1: with format:json
+    for attempt, use_json_format in enumerate([(True, "format:json"), (False, "freetext")], start=1):
+        force_json, label = use_json_format
+        payload: dict[str, Any] = {
+            "model": config.VLM_MODEL,
+            "prompt": prompt,
+            "images": [img_b64],
+            "stream": False,
+            "options": {"temperature": 0.2, "num_ctx": audit_num_ctx, "num_predict": 3072},
+        }
+        if force_json:
+            payload["format"] = "json"
+
+        try:
+            if callback and attempt > 1:
+                callback(f"Retry {attempt}/2: sending audit prompt without format:json constraint…")
+            t_vlm = _time.monotonic()
+            resp = requests.post(
+                f"{config.OLLAMA_BASE_URL}/api/generate",
+                json=payload,
+                timeout=config.OLLAMA_TIMEOUT,
+            )
+            resp.raise_for_status()
+            vlm_s = _time.monotonic() - t_vlm
+            raw = (resp.json().get("response") or "").strip()
+            if callback:
+                callback(f"VLM audit response ({label}) in {vlm_s:.1f}s ({len(raw)} chars)")
+
+            if not raw:
+                logger.warning("Audit attempt %d (%s) returned empty response", attempt, label)
+                if force_json:
+                    if callback:
+                        callback("Empty response with format:json — retrying without JSON constraint…")
+                    continue
+                return {}
+
+            json_str = _extract_json_from_text(raw)
+            if json_str:
+                out = json.loads(json_str)
+                if callback and out:
+                    n = len(out.get("detected_violations", []))
+                    status = out.get("audit_metadata", {}).get("overall_compliance_status", "Unknown")
+                    callback(f"WCAG audit complete: {status}, {n} violation(s) detected")
+                return out
+
+            # JSON extraction failed — on first attempt, retry without format:json
+            if force_json:
+                logger.warning("Audit attempt %d: no valid JSON (len=%d), retrying as freetext", attempt, len(raw))
+                if callback:
+                    callback("JSON parse failed — retrying without JSON constraint…")
+                continue
+
+            # Second attempt (freetext): parse violations from prose
+            logger.info("Audit attempt %d: building structured result from freetext (%d chars)", attempt, len(raw))
+            if callback:
+                callback("Parsing violations from free-text VLM response…")
+            out = _build_audit_from_freetext(raw, evaluation_standard)
+            n = len(out.get("detected_violations", []))
+            if callback:
+                callback(f"WCAG audit (freetext parse): {out['audit_metadata']['overall_compliance_status']}, {n} violation(s)")
+            return out
+
+        except Exception as exc:
+            logger.warning("run_ui_compliance_audit attempt %d failed: %s", attempt, exc)
+            if force_json:
+                if callback:
+                    callback(f"Audit attempt {attempt} failed: {exc} — retrying…")
+                continue
+            if callback:
+                callback(f"WCAG audit failed: {exc}")
+            return {}
+
+    return {}
 
 
 def inject_vlm_summaries_into_ocr_markdown(

@@ -16,6 +16,7 @@ from app import config
 from app.database import async_session, get_db
 from app.models import ChatSession, Workspace
 from app.routes.chat import (
+    _append_screenshot_audit_context,
     _build_citations_and_sources,
     _build_effective_query,
     _chat_session_state,
@@ -387,6 +388,9 @@ async def send_workspace_message(
             workspace.workspace_cache or "",
             session.session_cache or "",
         )
+    effective_query, screenshot_audit_meta = await _append_screenshot_audit_context(
+        db, req.content, effective_query
+    )
 
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
@@ -405,6 +409,8 @@ async def send_workspace_message(
 
     answer = _normalize_markdown_headings(result.get("answer", ""))
     meta = dict(result.get("metadata", {}))
+    if screenshot_audit_meta:
+        meta["screenshot_audit_context"] = screenshot_audit_meta
     cited_answer, meta["sources"] = await _build_citations_and_sources(
         answer, rag, db, loop, max_sources=10
     )

@@ -16,6 +16,8 @@ import {
   setWorkspacePreference,
   updateWorkspace,
   updateWorkspaceSession,
+  uploadDocuments,
+  startIngestion,
 } from "@/lib/api";
 import type { ChatMessage, ChatSession, Workspace } from "@/lib/types";
 import ChatPanel from "@/components/chat/ChatPanel";
@@ -33,6 +35,7 @@ export default function WorkspacesPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [backendUnavailable, setBackendUnavailable] = useState(false);
+  const [uploadingFiles, setUploadingFiles] = useState(false);
 
   const [forceRoute, setForceRoute] = useState<string | null>(null);
   const [temperature, setTemperature] = useState(0.2);
@@ -235,6 +238,44 @@ export default function WorkspacesPage() {
     }
   };
 
+  const handleUploadFiles = async (files: File[]) => {
+    if (!activeSession || files.length === 0) return;
+    setUploadingFiles(true);
+    try {
+      const uploadedDocs = await uploadDocuments(files);
+      const documentIds = uploadedDocs.map((d) => d.id);
+      if (documentIds.length > 0) {
+        await startIngestion(documentIds, ["pageindex", "contextual", "graph"]);
+      }
+      const filenames = uploadedDocs.map((d) => d.filename).slice(0, 3);
+      const extraCount = Math.max(0, uploadedDocs.length - filenames.length);
+      const msg: ChatMessage = {
+        role: "assistant",
+        content:
+          uploadedDocs.length > 0
+            ? `Uploaded ${uploadedDocs.length} file(s): ${filenames.join(", ")}${extraCount > 0 ? ` (+${extraCount} more)` : ""}. Ingestion started (PageIndex + Vector + Graph). Screenshot files will go through VLM UI analysis and WCAG compliance audit automatically.`
+            : "No supported files were uploaded.",
+        trace: [],
+        metadata: {},
+        route: "",
+      };
+      setMessages((prev) => [...prev, msg]);
+      if (activeWorkspace) await fetchSessions(activeWorkspace);
+      await fetchWorkspaces();
+    } catch (err) {
+      const msg: ChatMessage = {
+        role: "assistant",
+        content: `Upload failed: ${(err as Error).message}`,
+        trace: [],
+        metadata: {},
+        route: "",
+      };
+      setMessages((prev) => [...prev, msg]);
+    } finally {
+      setUploadingFiles(false);
+    }
+  };
+
   const handleRenameWorkspace = async (workspaceId: number, newName: string) => {
     const name = newName.trim() || "New Workspace";
     setEditingWorkspaceId(null);
@@ -426,6 +467,8 @@ export default function WorkspacesPage() {
             <ChatPanel
               messages={messages}
               onSend={handleSend}
+              onUploadFiles={handleUploadFiles}
+              uploadingFiles={uploadingFiles}
               onSetPreference={handleSetPreference}
               loading={loading}
               forceRoute={forceRoute}

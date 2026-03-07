@@ -128,6 +128,27 @@ async def lifespan(app: FastAPI):
         config.LLM_MODEL, config.INTERNAL_REASONING_AGENT, config.EMBEDDING_MODEL, config.VLM_MODEL,
     )
     await _verify_ollama_models()
+    # ── Auto-ingest WCAG reference data (once) for screenshot compliance ──
+    from app.modules.wcag_ingest import is_wcag_ingested, ensure_wcag_ingested
+    if not is_wcag_ingested() and config.WCAG_DATA_PATH.exists():
+        logger.info("WCAG data not yet ingested — scheduling background ingestion")
+        broadcaster.log("Ingesting WCAG reference data for compliance analysis…", module="system")
+
+        async def _ingest_wcag():
+            try:
+                cb = broadcaster.make_callback("wcag_ingest")
+                await ensure_wcag_ingested(callback=cb)
+                broadcaster.log("WCAG reference data ingestion complete", module="system")
+            except Exception as exc:
+                logger.error("WCAG background ingestion failed: %s", exc)
+                broadcaster.log(f"WCAG ingestion failed: {exc}", module="system", level="ERROR")
+
+        asyncio.create_task(_ingest_wcag())
+    elif is_wcag_ingested():
+        logger.info("WCAG reference data already ingested")
+    else:
+        logger.warning("wcag_data.json not found at %s — WCAG compliance analysis will be limited", config.WCAG_DATA_PATH)
+
     logger.info("Starting ingestion worker...")
     ingestion_worker.start()
     broadcaster.start_background_drain()  # so ingestion logs from worker threads reach UI

@@ -11,6 +11,7 @@ Extractions are saved as JSON metadata per file in storage/extractions/.
 from __future__ import annotations
 
 import base64
+import io
 import json
 import logging
 from datetime import datetime, timezone
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from PIL import Image
 
 from app import config
 
@@ -29,12 +31,133 @@ IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg"})
 
 
 def _image_file_to_base64(image_path: str | Path) -> str:
-    """Read an image file and return base64-encoded string."""
+    """Read/resize image and return base64-encoded string for VLM."""
     path = Path(image_path)
     if not path.exists():
         return ""
-    with open(path, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
+    try:
+        with Image.open(path) as img:
+            img = img.convert("RGB")
+            max_long_side = 1280
+            w, h = img.size
+            long_side = max(w, h)
+            if long_side > max_long_side:
+                scale = max_long_side / float(long_side)
+                img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=88, optimize=True)
+            return base64.b64encode(buf.getvalue()).decode("utf-8")
+    except Exception:
+        with open(path, "rb") as f:
+            return base64.b64encode(f.read()).decode("utf-8")
+
+
+def _call_vlm_with_fallback(
+    payload: dict[str, Any],
+    purpose: str,
+) -> str:
+    """Call Ollama /api/chat with conservative fallback contexts."""
+    def _extract_text(body: dict[str, Any]) -> str:
+        msg = body.get("message") or {}
+        content = msg.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        # Content can be a list of parts (e.g. [{"type": "text", "text": "..."}]).
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"].strip():
+                    return part["text"].strip()
+        # Some runtimes/models surface text on `response` (generate-style shape).
+        response = body.get("response")
+        if isinstance(response, str) and response.strip():
+            return response.strip()
+        # Reasoning / thinking: some models (e.g. qwen3) put main output here.
+        reasoning = msg.get("reasoning_content") or msg.get("thinking")
+        if isinstance(reasoning, str) and reasoning.strip():
+            return reasoning.strip()
+        if isinstance(body.get("thinking"), str) and body["thinking"].strip():
+            return body["thinking"].strip()
+        return ""
+
+    options = dict(payload.get("options") or {})
+    ctx_candidates = [options.get("num_ctx", 4096), 2048, 1024]
+    seen: set[int] = set()
+    ctx_values = [c for c in ctx_candidates if isinstance(c, int) and c > 0 and not (c in seen or seen.add(c))]
+    last_error = ""
+    for i, num_ctx in enumerate(ctx_values, start=1):
+        attempt = dict(payload)
+        attempt_opts = dict(options)
+        attempt_opts["num_ctx"] = num_ctx
+        if i > 1 and isinstance(attempt_opts.get("num_predict"), int):
+            attempt_opts["num_predict"] = max(128, int(attempt_opts["num_predict"]) // 2)
+        attempt["options"] = attempt_opts
+        try:
+            resp = requests.post(
+                f"{config.OLLAMA_BASE_URL}/api/chat",
+                json=attempt,
+                timeout=config.OLLAMA_TIMEOUT,
+            )
+            if resp.status_code >= 400:
+                body = (resp.text or "").strip()
+                last_error = f"{resp.status_code} {body[:300]}"
+                logger.warning("%s failed (num_ctx=%s): %s", purpose, num_ctx, last_error)
+                continue
+            parsed = resp.json()
+            text = _extract_text(parsed)
+            if text:
+                return text
+            # Diagnose why we got empty content (qwen3-vl is capable; often 500 or wrong key).
+            msg = parsed.get("message") or {}
+            content_val = msg.get("content")
+            err_piece = f" keys={list(parsed.keys())}"
+            if parsed.get("error"):
+                err_piece += f" error={str(parsed.get('error'))[:200]}"
+            err_piece += f" message.keys={list(msg.keys())}"
+            err_piece += f" message.content type={type(content_val).__name__}"
+            if content_val is not None:
+                err_piece += f" len={getattr(content_val, '__len__', lambda: 0)()}"
+                err_piece += f" repr={repr(content_val)[:300]}"
+            logger.warning(
+                "VLM empty content diagnostic (status=200):%s",
+                err_piece,
+            )
+            last_error = f"empty response body{err_piece}"
+        except Exception as exc:
+            last_error = str(exc)
+            logger.warning("%s exception (num_ctx=%s): %s", purpose, num_ctx, exc)
+
+    # Fallback: some Ollama model builds behave better with /api/generate for image prompts.
+    try:
+        user_msg = {}
+        for m in payload.get("messages", []):
+            if m.get("role") == "user":
+                user_msg = m
+        gen_payload = {
+            "model": payload.get("model"),
+            "prompt": (user_msg.get("content") or "").strip(),
+            "images": user_msg.get("images") or [],
+            "stream": False,
+            "options": options,
+        }
+        resp = requests.post(
+            f"{config.OLLAMA_BASE_URL}/api/generate",
+            json=gen_payload,
+            timeout=config.OLLAMA_TIMEOUT,
+        )
+        if resp.status_code < 400:
+            parsed = resp.json()
+            text = _extract_text(parsed)
+            if text:
+                logger.info("%s succeeded via /api/generate fallback", purpose)
+                return text
+        else:
+            last_error = f"/api/generate {resp.status_code} {(resp.text or '')[:240]}"
+    except Exception as exc:
+        last_error = f"/api/generate exception: {exc}"
+
+    if last_error:
+        logger.warning("%s final failure: %s", purpose, last_error)
+    return ""
 
 
 def is_image_file(file_path: str | Path) -> bool:
@@ -107,10 +230,11 @@ def _vlm_describe_image(
     img_b64: str,
     prompt: str,
     max_new_tokens: int = config.VLM_MAX_NEW_TOKENS,
+    model_override: str | None = None,
 ) -> str:
     """Send an image + prompt to the VLM via Ollama chat API and return the response."""
     payload: dict[str, Any] = {
-        "model": config.VLM_MODEL,
+        "model": model_override or config.VLM_MODEL,
         "messages": [
             {
                 "role": "user",
@@ -125,17 +249,7 @@ def _vlm_describe_image(
             "num_predict": max_new_tokens,
         },
     }
-    try:
-        resp = requests.post(
-            f"{config.OLLAMA_BASE_URL}/api/chat",
-            json=payload,
-            timeout=config.OLLAMA_TIMEOUT,
-        )
-        resp.raise_for_status()
-        return resp.json().get("message", {}).get("content", "").strip()
-    except Exception as exc:
-        logger.warning("VLM image description failed: %s", exc)
-        return ""
+    return _call_vlm_with_fallback(payload, purpose="VLM image description")
 
 
 # ── Main extraction function ─────────────────────────────────────────────────
@@ -175,15 +289,32 @@ def extract_image_description(
     if callback:
         callback(f"Extracting image description with {config.VLM_MODEL}...")
 
-    # Full screenshot description
+    # Full screenshot description (UI analysis model)
     full_desc = _vlm_describe_image(img_b64, SCREENSHOT_PROMPT)
+    if not full_desc.strip():
+        # A shorter retry prompt can help when long structured prompts are dropped
+        # by constrained runtimes.
+        full_desc = _vlm_describe_image(
+            img_b64,
+            (
+                "Describe this UI screenshot for a developer who cannot see it. "
+                "Explain layout top-to-bottom, components, and visible text verbatim."
+            ),
+            max_new_tokens=min(700, config.VLM_MAX_NEW_TOKENS),
+        )
     if callback:
         callback(f"Screenshot description: {len(full_desc)} chars")
 
-    # Status bar analysis
+    # Status bar analysis (UI analysis model)
     if callback:
         callback("Analyzing status bar region...")
     sb_desc = _vlm_describe_image(img_b64, STATUSBAR_PROMPT, max_new_tokens=300)
+    if not sb_desc.strip():
+        sb_desc = _vlm_describe_image(
+            img_b64,
+            "Describe only the top status bar icons and visible time, left to right.",
+            max_new_tokens=180,
+        )
     if callback:
         callback(f"Status bar description: {len(sb_desc)} chars")
 
@@ -191,6 +322,13 @@ def extract_image_description(
     merged = full_desc.strip()
     if sb_desc.strip():
         merged += "\n\nSTATUS BAR (detail pass):\n" + sb_desc.strip()
+    if not merged:
+        logger.warning("Image extraction produced empty output for %s", image_path.name)
+        if callback:
+            callback(
+                "UI description model returned empty output for screenshot. "
+                "This pipeline requires UI description generation (not OCR fallback)."
+            )
 
     result = {
         "screenshot_description": full_desc,

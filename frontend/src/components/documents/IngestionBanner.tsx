@@ -99,7 +99,6 @@ export default function IngestionBanner({ status, onCancelDone }: IngestionBanne
   const handleCancel = async () => {
     try {
       setCancelState({ phase: "cancelling" });
-      // Small delay so the user sees the "cancelling" state
       await new Promise((r) => setTimeout(r, 400));
       setCancelState({ phase: "cleaning" });
       const result = await cancelAllIngestion();
@@ -111,8 +110,13 @@ export default function IngestionBanner({ status, onCancelDone }: IngestionBanne
       });
       onCancelDone?.();
     } catch (e) {
-      console.error("Cancel ingestion failed:", e);
-      setCancelState({ phase: "idle" });
+      const msg = (e as Error)?.message ?? "";
+      if (msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
+        setCancelState({ phase: "done", count: 0, filenames: [] });
+      } else {
+        console.error("Cancel ingestion failed:", e);
+        setCancelState({ phase: "idle" });
+      }
       setPauseScheduledMessage(false);
       onCancelDone?.();
     }
