@@ -143,10 +143,34 @@ class OllamaClient:
                 f"The model is likely not pulled. Pull it with: ollama pull {effective_model}"
             ) from None
         resp.raise_for_status()
-        text = self._extract_generate_text(resp.json())
-        # Strip <think>...</think> blocks that reasoning models prepend
+        data = resp.json()
+        text = self._extract_generate_text(data)
+        if not text or len(text) < 10:
+            logger.warning(
+                "generate: model=%s format_json=%s response_len=%d prompt_eval_count=%s eval_count=%s done_reason=%s text=%.200s",
+                effective_model, format_json, len(text),
+                data.get("prompt_eval_count"), data.get("eval_count"),
+                data.get("done_reason"),
+                text[:200] if text else "(empty)",
+            )
+        else:
+            logger.debug(
+                "generate: model=%s format_json=%s response_len=%d prompt_eval_count=%s eval_count=%s",
+                effective_model, format_json, len(text),
+                data.get("prompt_eval_count"), data.get("eval_count"),
+            )
+        # Strip <think>...</think> blocks that reasoning models prepend,
+        # but keep the thinking content if it's the only output (qwen3 often
+        # puts the actual answer inside <think> tags).
         if "<think>" in text.lower():
-            text = self._strip_thinking_tags(text)
+            stripped = self._strip_thinking_tags(text)
+            if stripped:
+                text = stripped
+            else:
+                think_match = re.search(r"<think>([\s\S]*?)</think>", text, re.IGNORECASE)
+                if think_match and think_match.group(1).strip():
+                    logger.info("generate: all content was inside <think> tags; preserving thinking content")
+                    text = think_match.group(1).strip()
         return text
 
     def generate_json(
@@ -470,12 +494,24 @@ class OllamaClient:
 
     @staticmethod
     def _parse_json(raw: str) -> dict[str, Any]:
-        raw = raw.strip()
+        original_raw = raw.strip()
         # Strip <think>...</think> reasoning blocks before attempting parse
-        raw = OllamaClient._strip_thinking_tags(raw)
+        raw = OllamaClient._strip_thinking_tags(original_raw)
         if not raw:
-            logger.warning("Model returned empty response after stripping think tags")
-            return {"raw": ""}
+            # The model put ALL output inside <think> tags (common with qwen3).
+            # Try to extract JSON from the thinking content before giving up.
+            think_match = re.search(r"<think>([\s\S]*?)</think>", original_raw, re.IGNORECASE)
+            if think_match:
+                think_content = think_match.group(1).strip()
+                if think_content:
+                    logger.info("No content outside <think> tags; attempting JSON extraction from thinking content (%d chars)", len(think_content))
+                    raw = think_content
+                else:
+                    logger.warning("Model returned empty response after stripping think tags")
+                    return {"raw": ""}
+            else:
+                logger.warning("Model returned empty response after stripping think tags")
+                return {"raw": ""}
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
@@ -558,7 +594,14 @@ class AsyncOllamaClient:
                         data = await resp.json()
                         text = OllamaClient._extract_generate_text(data)
                         if "<think>" in text.lower():
-                            text = OllamaClient._strip_thinking_tags(text)
+                            stripped = OllamaClient._strip_thinking_tags(text)
+                            if stripped:
+                                text = stripped
+                            else:
+                                think_match = re.search(r"<think>([\s\S]*?)</think>", text, re.IGNORECASE)
+                                if think_match and think_match.group(1).strip():
+                                    logger.info("async generate: all content inside <think> tags; preserving")
+                                    text = think_match.group(1).strip()
                         return text
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 logger.warning("Async generate attempt %d failed: %s", attempt + 1, exc)

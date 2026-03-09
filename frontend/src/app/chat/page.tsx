@@ -46,11 +46,24 @@ export default function ChatPage() {
   const [editingSessionId, setEditingSessionId] = useState<number | null>(null);
   const [editingValue, setEditingValue] = useState("");
 
-  const fetchSessions = useCallback(async () => {
+  const CHAT_LAST_SESSION_KEY = "chat_last_session_id";
+
+  const fetchSessions = useCallback(async (restoreSession = false) => {
     try {
       setBackendUnavailable(false);
       const data = await listChatSessions();
       setSessions(data);
+      // Only restore last session on initial load (refresh / navigate back), not after every upload/send
+      if (restoreSession && data.length > 0) {
+        const raw = localStorage.getItem(CHAT_LAST_SESSION_KEY);
+        const parsedId = raw ? parseInt(raw, 10) : NaN;
+        const sessionId = Number.isFinite(parsedId) && data.some((s) => s.id === parsedId)
+          ? parsedId
+          : data[0].id;
+        setActiveSession(sessionId);
+        const msgs = await getChatMessages(sessionId);
+        setMessages(msgs);
+      }
     } catch (err) {
       if (isNetworkError(err)) {
         setSessions([]);
@@ -62,7 +75,7 @@ export default function ChatPage() {
   }, []);
 
   useEffect(() => {
-    fetchSessions();
+    fetchSessions(true);
   }, [fetchSessions]);
 
   // Load session state (last selected model) and available Ollama models on chat page load
@@ -85,6 +98,7 @@ export default function ChatPage() {
   const loadMessages = async (sessionId: number) => {
     setActiveSession(sessionId);
     try {
+      localStorage.setItem(CHAT_LAST_SESSION_KEY, String(sessionId));
       const msgs = await getChatMessages(sessionId);
       setMessages(msgs);
     } catch (err) {
@@ -108,6 +122,7 @@ export default function ChatPage() {
       if (activeSession === id) {
         setActiveSession(null);
         setMessages([]);
+        localStorage.removeItem(CHAT_LAST_SESSION_KEY);
       }
       await fetchSessions();
     } catch (err) {
@@ -302,7 +317,7 @@ export default function ChatPage() {
               ...prev,
               {
                 role: "assistant",
-                content: `WCAG compliance audit for **${filenames[i]}** did not return results — the VLM returned an empty response after retrying. You can try re-uploading the image, or ask about WCAG compliance and the system will use the stored UI description and WCAG knowledge base to answer.${errMsg}`,
+                content: `WCAG compliance audit for **${filenames[i]}** did not produce results. The LLM may have returned an empty response during the audit step. You can re-ingest the image from the Documents page to retry, or ask about WCAG compliance in chat and the system will use the stored UI description and WCAG knowledge base to answer.${errMsg}`,
                 trace: [],
                 metadata: {},
                 route: "",

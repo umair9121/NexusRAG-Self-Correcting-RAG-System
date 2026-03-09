@@ -1,1 +1,57 @@
-{}
+{
+  "15": {
+    "document_id": 15,
+    "filename": "545.jpg",
+    "file_path": "D:\\U\\ML Research\\Custom_RAG_System\\data\\545.jpg",
+    "pipelines": [
+      "pageindex",
+      "contextual",
+      "graph"
+    ],
+    "completed_pipelines": [],
+    "current_pipeline": "",
+    "status": "error"
+  },
+  "6": {
+    "document_id": 6,
+    "filename": "546.jpg",
+    "file_path": "D:\\U\\ML Research\\Custom_RAG_System\\data\\546.jpg",
+    "pipelines": [
+      "pageindex",
+      "contextual",
+      "graph"
+    ],
+    "completed_pipelines": [],
+    "current_pipeline": "",
+    "status": "running"
+  },
+  "8": {
+    "document_id": 8,
+    "filename": "2013.jpg",
+    "file_path": "D:\\U\\ML Research\\Custom_RAG_System\\data\\2013.jpg",
+    "pipelines": [
+      "pageindex",
+      "contextual",
+      "graph"
+    ],
+    "completed_pipelines": [],
+    "current_pipeline": "",
+    "status": "running"
+  },
+  "9": {
+    "document_id": 9,
+    "filename": "501.jpg",
+    "file_path": "D:\\U\\ML Research\\Custom_RAG_System\\data\\501.jpg",
+    "pipelines": [
+      "pageindex",
+      "contextual",
+      "graph"
+    ],
+    "completed_pipelines": [
+      "pageindex",
+      "contextual"
+    ],
+    "current_pipeline": "",
+    "status": "running"
+  }
+}

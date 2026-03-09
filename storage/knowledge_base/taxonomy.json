@@ -81,7 +81,7 @@
         "component"
       ],
       "description": "Maritime vessel Web element for user interaction Button Button labeled 'Search' Button labeled 'Search' to perform the search Button on a form Lower right corner Label 'go' Right side of the screen Round button A button labeled 'Go' that advances the process User interface element that can be toggled User interface element User interface element Web page A button that is used to open a new window or tab A button in a web page A button in a web page Button element Button element Button element Button element User interface element for a button Type of form control Interactive element Button widget",
-      "mentions": 27,
+      "mentions": 30,
       "documents": [
         "wcag_data",
         "1460"
@@ -198,9 +198,10 @@
         "component"
       ],
       "description": "Text content Text content Text with variations in presentation Text that is emphasized Text that is emphasized Text that is a quotation Text that is code Text presentation in web pages Text size Text color Text line height Textual information that provides additional context Textual information that indicates the control's purpose Textual information that provides additional context Text elements in a paragraph or block Text elements in a paragraph or block Text elements in a paragraph or block The surrounding text in a paragraph or block of text Text content within the link Text presented over a background Text on a college campus Text on a college campus Text on a college campus Text on a college campus Text displayed on the web page Text in form fields Text-based form controls are input boxes and buttons used for form submission Visually rendered text is text that is displayed on the screen and can be resized by the user Text presentation in web pages Text alignment Text size Text color Text on a background Text on a background Text on a background Text displayed over the image User preferences Text layout that is fully justified A text element that is displayed as an image Text presentation in web pages Text alignment Text size Text color The visual appearance of spacing in text Text content Text inside a box Text inside a box Text inside a box Text inside a box Text inside a box Text description The text in which the word or phrase is used The original text content Text of the web page Text in languages where meaning varies with pronunciation Text in languages where meaning varies with pronunciation A textual explanation of the technique The text description of the technique",
-      "mentions": 58,
+      "mentions": 59,
       "documents": [
-        "wcag_data"
+        "wcag_data",
+        "4031"
       ]
     },
     "Link": {
@@ -1730,11 +1731,16 @@
         "component"
       ],
       "description": "Banner role Main navigation section A header element A header element A header element Header cell with id 'e' and headers attribute Table header element Table header element",
-      "mentions": 10,
+      "mentions": 16,
       "documents": [
         "wcag_data",
         "1863",
-        "1460"
+        "1460",
+        "2942",
+        "2780",
+        "4031",
+        "1303",
+        "2867"
       ]
     },
     "Nav": {
@@ -1760,10 +1766,12 @@
         "component"
       ],
       "description": "Site contact details Site contact details A section at the bottom of the page Sticky region that remains visible in the viewport",
-      "mentions": 5,
+      "mentions": 8,
       "documents": [
         "wcag_data",
-        "2834"
+        "2834",
+        "2780",
+        "1303"
       ]
     },
     "At": {
@@ -2021,9 +2029,10 @@
     "Icon": {
       "types": [],
       "description": "Icon used in a link without visible text Icon used in a link without visible text Icon used in a link without visible text",
-      "mentions": 3,
+      "mentions": 5,
       "documents": [
-        "wcag_data"
+        "wcag_data",
+        "1303"
       ]
     },
     "Email Icon Font": {
@@ -2113,9 +2122,10 @@
     "Structure": {
       "types": [],
       "description": "Document structure Text content with structure Structural markup Hierarchical structure",
-      "mentions": 4,
+      "mentions": 5,
       "documents": [
-        "wcag_data"
+        "wcag_data",
+        "4031"
       ]
     },
     "Tagged": {
@@ -2213,9 +2223,10 @@
         "component"
       ],
       "description": "Text field for entering the search term User input component An input field is a field in a form where the user can enter text or other data. Input field Input field Input field Input field Input field Text input field Input field User interface element for user input",
-      "mentions": 11,
+      "mentions": 12,
       "documents": [
-        "wcag_data"
+        "wcag_data",
+        "4031"
       ]
     },
     "Select Menu": {
@@ -3061,10 +3072,11 @@
         "component"
       ],
       "description": "Navigation elements in a web page A navigation bar containing a long list of links on the left side of the page A navigation bar containing a long list of links on the left side of the page A navigation bar containing a long list of links on the left side of the page A complex navigation bar A navigation bar that appears on all web pages within a collection of web pages",
-      "mentions": 7,
+      "mentions": 8,
       "documents": [
         "wcag_data",
-        "1863"
+        "1863",
+        "2942"
       ]
     },
     "Tab Order": {
@@ -3289,11 +3301,14 @@
       ]
     },
     "Input Fields": {
-      "types": [],
-      "description": "Form fields collecting information about the user",
-      "mentions": 1,
+      "types": [
+        "component"
+      ],
+      "description": "Four horizontal input fields for entering the code",
+      "mentions": 2,
       "documents": [
-        "wcag_data"
+        "wcag_data",
+        "1074"
       ]
     },
     "Programmatically Determined Inputs": {
@@ -3915,9 +3930,10 @@
     "Text Fields": {
       "types": [],
       "description": "Text input elements for first name, last name, telephone number, and email address Text input elements for form submission Text input elements for form submission",
-      "mentions": 3,
+      "mentions": 4,
       "documents": [
-        "wcag_data"
+        "wcag_data",
+        "2716"
       ]
     },
     "Submit Button": {
@@ -4673,11 +4689,18 @@
       ]
     },
     "Icons": {
-      "types": [],
+      "types": [
+        "component"
+      ],
       "description": "Graphical icons used on solid or gradient backgrounds",
-      "mentions": 1,
+      "mentions": 7,
       "documents": [
-        "wcag_data"
+        "wcag_data",
+        "2916",
+        "2780",
+        "4031",
+        "1303",
+        "1460"
       ]
     },
     "Solid Icon": {
@@ -5459,9 +5482,10 @@
         "system"
       ],
       "description": "User-controlled option to update the speaker queue Input element for selecting options Checkbox User confirmation control User confirmation control User confirmation control User confirmation control User confirmation control A user confirmation mechanism",
-      "mentions": 9,
+      "mentions": 10,
       "documents": [
-        "wcag_data"
+        "wcag_data",
+        "2867"
       ]
     },
     "Speaker Queue": {
@@ -6029,10 +6053,11 @@
         "component"
       ],
       "description": "A tag in HTML that defines the title of a document Title attribute",
-      "mentions": 3,
+      "mentions": 4,
       "documents": [
         "wcag_data",
-        "1863"
+        "1863",
+        "2942"
       ]
     },
     "Title Field": {
@@ -6208,9 +6233,10 @@
         "component"
       ],
       "description": "Web dialog element Web dialog element Web dialog element Interface component User interface element",
-      "mentions": 5,
+      "mentions": 6,
       "documents": [
-        "wcag_data"
+        "wcag_data",
+        "4717"
       ]
     },
     "Close-Button": {
@@ -9439,11 +9465,12 @@
         "component"
       ],
       "description": "Buttons used to toggle the announcements on or off",
-      "mentions": 3,
+      "mentions": 4,
       "documents": [
         "wcag_data",
         "1863",
-        "2834"
+        "2834",
+        "2716"
       ]
     },
     "Dynamic Content": {
@@ -9463,25 +9490,35 @@
       ]
     },
     "Screen": {
-      "types": [],
-      "description": "User interface element User interface element User interface element User interface element User interface element User interface element",
-      "mentions": 14,
+      "types": [
+        "component"
+      ],
+      "description": "Mobile application screen Mobile application screen Mobile application screen Mobile application screen Mobile application screen Mobile application screen Mobile application screen Display area",
+      "mentions": 34,
       "documents": [
         "1863",
         "758",
         "1460",
         "686",
-        "2834"
+        "2834",
+        "2942",
+        "1074",
+        "2916",
+        "2780",
+        "4031",
+        "1303",
+        "2867"
       ]
     },
     "App": {
       "types": [
         "component"
       ],
-      "description": "Cognitive training or game app",
-      "mentions": 1,
+      "description": "Mobile application designed for enabling users to access offline content Mobile application's header component Mobile application's input component Mobile application's button component Mobile application's icon component Mobile application's button component",
+      "mentions": 7,
       "documents": [
-        "1863"
+        "1863",
+        "4031"
       ]
     },
     "Logo": {
@@ -9499,14 +9536,22 @@
         "component"
       ],
       "description": "Top part of the screen with icons Status bar in the top of the screen Status bar in the top of the screen Status bar in the top of the screen Status bar in the top of the screen Status bar in the top of the screen",
-      "mentions": 14,
+      "mentions": 39,
       "documents": [
         "1863",
         "758",
         "1460",
         "686",
         "2834",
-        "2317"
+        "2317",
+        "2942",
+        "1074",
+        "2916",
+        "2780",
+        "4031",
+        "4717",
+        "1303",
+        "2867"
       ]
     },
     "Back Arrow": {
@@ -9514,9 +9559,10 @@
         "component"
       ],
       "description": "Back arrow on the left side of the status bar",
-      "mentions": 1,
+      "mentions": 2,
       "documents": [
-        "1863"
+        "1863",
+        "1074"
       ]
     },
     "Settings Screen": {
@@ -9562,10 +9608,11 @@
         "component"
       ],
       "description": "Icon representing Facebook",
-      "mentions": 2,
+      "mentions": 3,
       "documents": [
         "758",
-        "2317"
+        "2317",
+        "4717"
       ]
     },
     "Google Icon": {
@@ -9619,16 +9666,16 @@
     },
     "People": {
       "types": [],
-      "description": "User interface component",
-      "mentions": 1,
+      "description": "A mobile application screen for managing contacts or identifying individuals",
+      "mentions": 2,
       "documents": [
         "1460"
       ]
     },
     "Add Person": {
       "types": [],
-      "description": "Actionable component",
-      "mentions": 1,
+      "description": "A button for adding a new person to the list",
+      "mentions": 2,
       "documents": [
         "1460"
       ]
@@ -9638,9 +9685,11 @@
         "component"
       ],
       "description": "Social media platform",
-      "mentions": 1,
+      "mentions": 3,
       "documents": [
-        "1460"
+        "1460",
+        "4031",
+        "1303"
       ]
     },
     "Bell": {
@@ -9676,9 +9725,10 @@
         "component"
       ],
       "description": "Contains back arrow, title, and UNLOCK button Header bar with back arrow, title, and UNLOCK button",
-      "mentions": 2,
+      "mentions": 3,
       "documents": [
-        "686"
+        "686",
+        "1074"
       ]
     },
     "Progress Bar": {
@@ -9691,18 +9741,20 @@
     },
     "Question": {
       "types": [],
-      "description": "Question 'Python is a:'",
-      "mentions": 1,
+      "description": "Question: 'How much do you make in a year?'",
+      "mentions": 3,
       "documents": [
-        "686"
+        "686",
+        "2780"
       ]
     },
     "Options": {
       "types": [],
       "description": "Radio button options: 'Set of editing tools', 'Development environment', 'Programming language'",
-      "mentions": 1,
+      "mentions": 2,
       "documents": [
-        "686"
+        "686",
+        "2780"
       ]
     },
     "Check Button": {
@@ -9824,9 +9876,11 @@
         "component"
       ],
       "description": "Header section with title and navigation tabs Header section with title and navigation tabs",
-      "mentions": 2,
+      "mentions": 4,
       "documents": [
-        "2317"
+        "2317",
+        "2780",
+        "1303"
       ]
     },
     "Main Content Area": {
@@ -9861,6 +9915,423 @@
       "mentions": 1,
       "documents": [
         "2317"
+      ]
+    },
+    "Language Selection Interface": {
+      "types": [
+        "component"
+      ],
+      "description": "Interface for selecting languages",
+      "mentions": 1,
+      "documents": [
+        "2942"
+      ]
+    },
+    "Menu Icon": {
+      "types": [],
+      "description": "Three horizontal lines",
+      "mentions": 1,
+      "documents": [
+        "2942"
+      ]
+    },
+    "Subtitle": {
+      "types": [],
+      "description": "Subtitle text",
+      "mentions": 1,
+      "documents": [
+        "2942"
+      ]
+    },
+    "Language List": {
+      "types": [
+        "component"
+      ],
+      "description": "List of languages with flags",
+      "mentions": 1,
+      "documents": [
+        "2942"
+      ]
+    },
+    "Flag Icon": {
+      "types": [],
+      "description": "Icons representing languages",
+      "mentions": 1,
+      "documents": [
+        "2942"
+      ]
+    },
+    "Back Button": {
+      "types": [],
+      "description": "Back button",
+      "mentions": 1,
+      "documents": [
+        "2942"
+      ]
+    },
+    "I Speak App": {
+      "types": [],
+      "description": "Application on the screen",
+      "mentions": 1,
+      "documents": [
+        "2942"
+      ]
+    },
+    "Time": {
+      "types": [
+        "component"
+      ],
+      "description": "Time information",
+      "mentions": 2,
+      "documents": [
+        "2942",
+        "1074"
+      ]
+    },
+    "Verification Screen": {
+      "types": [],
+      "description": "Account verification interface",
+      "mentions": 1,
+      "documents": [
+        "1074"
+      ]
+    },
+    "Subtitle Text": {
+      "types": [
+        "component"
+      ],
+      "description": "Gray text 'Please enter the code sent on your phone'",
+      "mentions": 1,
+      "documents": [
+        "1074"
+      ]
+    },
+    "Continue Button": {
+      "types": [
+        "component"
+      ],
+      "description": "Green 'Continue' button",
+      "mentions": 1,
+      "documents": [
+        "1074"
+      ]
+    },
+    "Footer Text": {
+      "types": [
+        "component"
+      ],
+      "description": "Green text 'Didn't get the code? Resend Code'",
+      "mentions": 1,
+      "documents": [
+        "1074"
+      ]
+    },
+    "Bottom Navigation Bar": {
+      "types": [
+        "component"
+      ],
+      "description": "Android navigation bar with back, home, and square icons",
+      "mentions": 2,
+      "documents": [
+        "1074",
+        "2867"
+      ]
+    },
+    "Left Side": {
+      "types": [],
+      "description": "Left side of the screen",
+      "mentions": 1,
+      "documents": [
+        "1074"
+      ]
+    },
+    "Intuit Mint": {
+      "types": [],
+      "description": "A mobile application for financial services",
+      "mentions": 1,
+      "documents": [
+        "2716"
+      ]
+    },
+    "Login Screen": {
+      "types": [
+        "component"
+      ],
+      "description": "A screenshot of the login screen A screenshot of the login screen A screenshot of the login screen",
+      "mentions": 4,
+      "documents": [
+        "2716",
+        "2867"
+      ]
+    },
+    "Premium Subscription": {
+      "types": [],
+      "description": "Premium feature of the Busuu app",
+      "mentions": 1,
+      "documents": [
+        "2916"
+      ]
+    },
+    "Investment Questions": {
+      "types": [],
+      "description": "Survey form for income data collection",
+      "mentions": 1,
+      "documents": [
+        "2780"
+      ]
+    },
+    "Income Brackets": {
+      "types": [],
+      "description": "List of income brackets for selection",
+      "mentions": 1,
+      "documents": [
+        "2780"
+      ]
+    },
+    "Navigation Icons": {
+      "types": [],
+      "description": "Three navigation icons (left arrow, circle, square)",
+      "mentions": 1,
+      "documents": [
+        "2780"
+      ]
+    },
+    "Top Strip": {
+      "types": [],
+      "description": "Thin strip at the very top of the screen",
+      "mentions": 2,
+      "documents": [
+        "2780"
+      ]
+    },
+    "Ui": {
+      "types": [
+        "component"
+      ],
+      "description": "User interface User interface User interface User interface",
+      "mentions": 4,
+      "documents": [
+        "4031"
+      ]
+    },
+    "Components": {
+      "types": [],
+      "description": "UI elements",
+      "mentions": 1,
+      "documents": [
+        "4031"
+      ]
+    },
+    "Investment Questions Screen": {
+      "types": [],
+      "description": "Survey or form screen for investment-related questions",
+      "mentions": 1,
+      "documents": [
+        "2780"
+      ]
+    },
+    "Ui Component": {
+      "types": [
+        "component"
+      ],
+      "description": "User interface component User interface component User interface component User interface component User interface component",
+      "mentions": 5,
+      "documents": [
+        "2780"
+      ]
+    },
+    "Notv": {
+      "types": [
+        "component"
+      ],
+      "description": "App name (NOTV)",
+      "mentions": 1,
+      "documents": [
+        "2780"
+      ]
+    },
+    "Invite Button": {
+      "types": [
+        "component"
+      ],
+      "description": "Button labeled 'Invite friends for getting offline downloads'",
+      "mentions": 1,
+      "documents": [
+        "4031"
+      ]
+    },
+    "Social Media Icons": {
+      "types": [
+        "component"
+      ],
+      "description": "Three social media icons (WhatsApp, Facebook, Twitter)",
+      "mentions": 1,
+      "documents": [
+        "4031"
+      ]
+    },
+    "Footer Button": {
+      "types": [
+        "component"
+      ],
+      "description": "Button labeled 'ACCESS YOUR DOWNLOADED SONGS'",
+      "mentions": 1,
+      "documents": [
+        "4031"
+      ]
+    },
+    "Google": {
+      "types": [],
+      "description": "icon",
+      "mentions": 1,
+      "documents": [
+        "4031"
+      ]
+    },
+    "Wi-Fi Auto-Connection Setting": {
+      "types": [],
+      "description": "A settings menu for Wi-Fi connections",
+      "mentions": 1,
+      "documents": [
+        "4717"
+      ]
+    },
+    "Phone Icon": {
+      "types": [
+        "component"
+      ],
+      "description": "Phone icon in status bar",
+      "mentions": 1,
+      "documents": [
+        "4717"
+      ]
+    },
+    "Camera Icon": {
+      "types": [
+        "component"
+      ],
+      "description": "Camera icon in status bar",
+      "mentions": 1,
+      "documents": [
+        "4717"
+      ]
+    },
+    "Interface": {
+      "types": [],
+      "description": "User interface element",
+      "mentions": 1,
+      "documents": [
+        "1303"
+      ]
+    },
+    "List Rows": {
+      "types": [
+        "component"
+      ],
+      "description": "List of city names on the screen",
+      "mentions": 1,
+      "documents": [
+        "1303"
+      ]
+    },
+    "City Names": {
+      "types": [],
+      "description": "City names displayed as list items",
+      "mentions": 1,
+      "documents": [
+        "1303"
+      ]
+    },
+    "Bottom Navigation": {
+      "types": [],
+      "description": "Navigation bar with back, home, and menu icons",
+      "mentions": 1,
+      "documents": [
+        "1303"
+      ]
+    },
+    "Download Icon": {
+      "types": [
+        "component"
+      ],
+      "description": "Action icon for downloading content",
+      "mentions": 1,
+      "documents": [
+        "1303"
+      ]
+    },
+    "Login With Facebook Button": {
+      "types": [],
+      "description": "Button for logging in with Facebook",
+      "mentions": 1,
+      "documents": [
+        "2867"
+      ]
+    },
+    "Login Button": {
+      "types": [],
+      "description": "Primary login action Primary login action",
+      "mentions": 2,
+      "documents": [
+        "2867"
+      ]
+    },
+    "Email Address Input Field": {
+      "types": [],
+      "description": "Field for entering email address",
+      "mentions": 1,
+      "documents": [
+        "2867"
+      ]
+    },
+    "Password Input Field": {
+      "types": [],
+      "description": "Field for entering password",
+      "mentions": 1,
+      "documents": [
+        "2867"
+      ]
+    },
+    "Skip Text": {
+      "types": [],
+      "description": "Text indicating to skip the login process",
+      "mentions": 1,
+      "documents": [
+        "2867"
+      ]
+    },
+    "Facebook Logo": {
+      "types": [
+        "component"
+      ],
+      "description": "icon in the status bar",
+      "mentions": 1,
+      "documents": [
+        "2867"
+      ]
+    },
+    "Finish": {
+      "types": [],
+      "description": "A red button to complete the current process",
+      "mentions": 1,
+      "documents": [
+        "1460"
+      ]
+    },
+    "Cancel": {
+      "types": [],
+      "description": "A gray button to exit the current process",
+      "mentions": 1,
+      "documents": [
+        "1460"
+      ]
+    },
+    "Top Part Of The Screen": {
+      "types": [],
+      "description": "Screen's top part",
+      "mentions": 1,
+      "documents": [
+        "1460"
       ]
     }
   },
@@ -10061,7 +10532,29 @@
       "Pets",
       "Listing Features",
       "App Bar",
-      "Main Content Area"
+      "Main Content Area",
+      "Language Selection Interface",
+      "Language List",
+      "Subtitle Text",
+      "Input Fields",
+      "Continue Button",
+      "Footer Text",
+      "Bottom Navigation Bar",
+      "Time",
+      "Login Screen",
+      "Screen",
+      "Icons",
+      "Ui",
+      "Ui Component",
+      "Notv",
+      "Invite Button",
+      "Social Media Icons",
+      "Footer Button",
+      "Phone Icon",
+      "Camera Icon",
+      "List Rows",
+      "Download Icon",
+      "Facebook Logo"
     ],
     "system": [
       "Css",
@@ -10095,8 +10588,8 @@
     ]
   },
   "meta": {
-    "last_updated": "2026-03-06T11:44:32Z",
-    "document_count": 7,
-    "entity_count": 1176
+    "last_updated": "2026-03-07T03:38:15Z",
+    "document_count": 16,
+    "entity_count": 1223
   }
 }

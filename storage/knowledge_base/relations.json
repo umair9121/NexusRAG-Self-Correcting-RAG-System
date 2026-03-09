@@ -14982,7 +14982,8 @@
       "object": "Header",
       "description": "The status bar contains the header with 'Find Gabor' text",
       "documents": [
-        "1863"
+        "1863",
+        "2867"
       ]
     },
     {
@@ -15009,7 +15010,9 @@
       "object": "Screen",
       "description": "The status bar contains icons for time, battery, and connectivity",
       "documents": [
-        "758"
+        "758",
+        "1074",
+        "1460"
       ]
     },
     {
@@ -15045,7 +15048,8 @@
       "object": "Status Bar",
       "description": "The Facebook icon is part of the status bar",
       "documents": [
-        "758"
+        "758",
+        "4717"
       ]
     },
     {
@@ -15316,6 +15320,614 @@
       "description": "The Bluetooth icon is followed by the battery icon in the status bar",
       "documents": [
         "2317"
+      ]
+    },
+    {
+      "subject": "Screen",
+      "relationship": "is part of",
+      "object": "Language Selection Interface",
+      "description": "The screen is a part of a translation or language learning app interface designed for selecting languages.",
+      "documents": [
+        "2942"
+      ]
+    },
+    {
+      "subject": "Header",
+      "relationship": "contains",
+      "object": "Menu Icon",
+      "description": "The header contains the menu icon which is used to navigate the app.",
+      "documents": [
+        "2942"
+      ]
+    },
+    {
+      "subject": "Subtitle",
+      "relationship": "is part of",
+      "object": "Title",
+      "description": "The subtitle is part of the title of the app and provides additional information about the screen.",
+      "documents": [
+        "2942"
+      ]
+    },
+    {
+      "subject": "Language List",
+      "relationship": "contains",
+      "object": "Flag Icon",
+      "description": "The language list contains flags that represent the languages available for selection.",
+      "documents": [
+        "2942"
+      ]
+    },
+    {
+      "subject": "Navigation Bar",
+      "relationship": "contains",
+      "object": "Back Button",
+      "description": "The navigation bar contains the back button which allows users to navigate back to the previous screen.",
+      "documents": [
+        "2942"
+      ]
+    },
+    {
+      "subject": "Status Bar",
+      "relationship": "contains",
+      "object": "I Speak App",
+      "description": "The status bar contains the 'I Speak' application",
+      "documents": [
+        "2942"
+      ]
+    },
+    {
+      "subject": "Time",
+      "relationship": "shows",
+      "object": "Status Bar",
+      "description": "The status bar shows the time",
+      "documents": [
+        "2942"
+      ]
+    },
+    {
+      "subject": "Screen",
+      "relationship": "is",
+      "object": "Verification Screen",
+      "description": "The screen is designed for account verification, allowing users to enter a code sent via their phone.",
+      "documents": [
+        "1074"
+      ]
+    },
+    {
+      "subject": "Header Bar",
+      "relationship": "contains",
+      "object": "Screen",
+      "description": "The header bar contains the back arrow, title 'Verify account', and subtitle 'Please enter the code sent on your phone'.",
+      "documents": [
+        "1074"
+      ]
+    },
+    {
+      "subject": "Subtitle Text",
+      "relationship": "contains",
+      "object": "Screen",
+      "description": "The subtitle text contains the instruction for entering the code sent on the user's phone.",
+      "documents": [
+        "1074"
+      ]
+    },
+    {
+      "subject": "Input Fields",
+      "relationship": "contains",
+      "object": "Screen",
+      "description": "The input fields contain four horizontal lines for the user to enter the code sent via their phone.",
+      "documents": [
+        "1074"
+      ]
+    },
+    {
+      "subject": "Continue Button",
+      "relationship": "contains",
+      "object": "Screen",
+      "description": "The Continue button contains the green 'Continue' text, which is the primary action for the screen.",
+      "documents": [
+        "1074"
+      ]
+    },
+    {
+      "subject": "Footer Text",
+      "relationship": "contains",
+      "object": "Screen",
+      "description": "The footer text contains the link to resend the code if the user hasn't received it.",
+      "documents": [
+        "1074"
+      ]
+    },
+    {
+      "subject": "Bottom Navigation Bar",
+      "relationship": "contains",
+      "object": "Screen",
+      "description": "The bottom navigation bar contains the Android navigation bar with three icons for navigation.",
+      "documents": [
+        "1074"
+      ]
+    },
+    {
+      "subject": "Back Arrow",
+      "relationship": "has",
+      "object": "Left Side",
+      "description": "The back arrow is a navigation element located on the left side of the screen.",
+      "documents": [
+        "1074"
+      ]
+    },
+    {
+      "subject": "Time",
+      "relationship": "has",
+      "object": "Status Bar",
+      "description": "The time is a component of the status bar and is displayed at the top of the screen.",
+      "documents": [
+        "1074"
+      ]
+    },
+    {
+      "subject": "Intuit Mint",
+      "relationship": "is",
+      "object": "Login Screen",
+      "description": "The login screen is a mobile application for financial services",
+      "documents": [
+        "2716"
+      ]
+    },
+    {
+      "subject": "Login Screen",
+      "relationship": "contains",
+      "object": "Text Fields",
+      "description": "The login screen contains text input fields for username and password",
+      "documents": [
+        "2716"
+      ]
+    },
+    {
+      "subject": "Login Screen",
+      "relationship": "contains",
+      "object": "Buttons",
+      "description": "The login screen contains buttons for login and sign up",
+      "documents": [
+        "2716"
+      ]
+    },
+    {
+      "subject": "Screen",
+      "relationship": "promotes",
+      "object": "Premium Subscription",
+      "description": "The promotional screen highlights the benefits of the Premium subscription",
+      "documents": [
+        "2916"
+      ]
+    },
+    {
+      "subject": "Status Bar",
+      "relationship": "part of",
+      "object": "Screen",
+      "description": "The status bar is a part of the screen's top strip.",
+      "documents": [
+        "2916",
+        "4031"
+      ]
+    },
+    {
+      "subject": "Icons",
+      "relationship": "contains",
+      "object": "Status Bar",
+      "description": "The icons are contained within the status bar.",
+      "documents": [
+        "2916",
+        "4031"
+      ]
+    },
+    {
+      "subject": "Screen",
+      "relationship": "contains",
+      "object": "Investment Questions",
+      "description": "The screen contains the survey form for collecting income data related to investment services.",
+      "documents": [
+        "2780"
+      ]
+    },
+    {
+      "subject": "Header",
+      "relationship": "contains",
+      "object": "App Bar",
+      "description": "The header contains the status bar with time and network indicators, along with the navigation bar featuring the back arrow, title, and next button.",
+      "documents": [
+        "2780"
+      ]
+    },
+    {
+      "subject": "Question",
+      "relationship": "lists",
+      "object": "Income Brackets",
+      "description": "The question lists the income brackets for the user to select from.",
+      "documents": [
+        "2780"
+      ]
+    },
+    {
+      "subject": "Footer",
+      "relationship": "contains",
+      "object": "Navigation Icons",
+      "description": "The footer contains the bottom navigation bar with three navigation icons.",
+      "documents": [
+        "2780"
+      ]
+    },
+    {
+      "subject": "Status Bar",
+      "relationship": "is",
+      "object": "Top Strip",
+      "description": "The status bar is the thin strip at the very top of the screen",
+      "documents": [
+        "2780"
+      ]
+    },
+    {
+      "subject": "Status Bar",
+      "relationship": "contains",
+      "object": "Icons",
+      "description": "The status bar contains icons",
+      "documents": [
+        "2780",
+        "4031",
+        "1303",
+        "1460"
+      ]
+    },
+    {
+      "subject": "Screen",
+      "relationship": "contains",
+      "object": "Ui",
+      "description": "The screen contains a user interface",
+      "documents": [
+        "4031"
+      ]
+    },
+    {
+      "subject": "Ui",
+      "relationship": "includes",
+      "object": "Components",
+      "description": "The UI includes various components",
+      "documents": [
+        "4031"
+      ]
+    },
+    {
+      "subject": "Ui",
+      "relationship": "contains",
+      "object": "Text",
+      "description": "The UI contains text elements",
+      "documents": [
+        "4031"
+      ]
+    },
+    {
+      "subject": "Ui",
+      "relationship": "includes",
+      "object": "Structure",
+      "description": "The UI includes the structure of the layout",
+      "documents": [
+        "4031"
+      ]
+    },
+    {
+      "subject": "Investment Questions Screen",
+      "relationship": "is part of",
+      "object": "Ui Component",
+      "description": "The Investment Questions Screen is a UI component used for collecting income data",
+      "documents": [
+        "2780"
+      ]
+    },
+    {
+      "subject": "Header",
+      "relationship": "contains",
+      "object": "Ui Component",
+      "description": "The Header UI component includes the back arrow, title, and Next button",
+      "documents": [
+        "2780"
+      ]
+    },
+    {
+      "subject": "Question",
+      "relationship": "is part of",
+      "object": "Ui Component",
+      "description": "The Question UI component is part of the Investment Questions Screen",
+      "documents": [
+        "2780"
+      ]
+    },
+    {
+      "subject": "Options",
+      "relationship": "is part of",
+      "object": "Ui Component",
+      "description": "The Options UI component is part of the Investment Questions Screen",
+      "documents": [
+        "2780"
+      ]
+    },
+    {
+      "subject": "Footer",
+      "relationship": "contains",
+      "object": "Ui Component",
+      "description": "The Footer UI component contains the left arrow, circle, and square icons",
+      "documents": [
+        "2780"
+      ]
+    },
+    {
+      "subject": "Notv",
+      "relationship": "contains",
+      "object": "Status Bar",
+      "description": "The status bar contains the app name NOTV",
+      "documents": [
+        "2780"
+      ]
+    },
+    {
+      "subject": "Screen",
+      "relationship": "contains",
+      "object": "App",
+      "description": "The screen is part of the mobile application that allows users to access free offline downloads",
+      "documents": [
+        "4031"
+      ]
+    },
+    {
+      "subject": "Header",
+      "relationship": "contains",
+      "object": "App",
+      "description": "The header is a component of the mobile application that contains the back arrow, title, and subtitle",
+      "documents": [
+        "4031"
+      ]
+    },
+    {
+      "subject": "Input Field",
+      "relationship": "contains",
+      "object": "App",
+      "description": "The input field is a component of the mobile application that allows users to enter the word 'Free'",
+      "documents": [
+        "4031"
+      ]
+    },
+    {
+      "subject": "Invite Button",
+      "relationship": "contains",
+      "object": "App",
+      "description": "The invite button is a component of the mobile application that allows users to invite friends for free downloads",
+      "documents": [
+        "4031"
+      ]
+    },
+    {
+      "subject": "Social Media Icons",
+      "relationship": "contains",
+      "object": "App",
+      "description": "The social media icons are components of the mobile application that are used to invite friends",
+      "documents": [
+        "4031"
+      ]
+    },
+    {
+      "subject": "Footer Button",
+      "relationship": "contains",
+      "object": "App",
+      "description": "The footer button is a component of the mobile application that allows users to access their downloaded songs",
+      "documents": [
+        "4031"
+      ]
+    },
+    {
+      "subject": "Status Bar",
+      "relationship": "has",
+      "object": "Facebook",
+      "description": "The status bar has the Facebook icon displayed at the top of the screen",
+      "documents": [
+        "4031"
+      ]
+    },
+    {
+      "subject": "Status Bar",
+      "relationship": "has",
+      "object": "Google",
+      "description": "The status bar has the Google icon displayed at the top of the screen",
+      "documents": [
+        "4031"
+      ]
+    },
+    {
+      "subject": "Wi-Fi Auto-Connection Setting",
+      "relationship": "is",
+      "object": "Dialog",
+      "description": "The Wi-Fi auto-connection setting dialog is a graphical interface for user interaction",
+      "documents": [
+        "4717"
+      ]
+    },
+    {
+      "subject": "Phone Icon",
+      "relationship": "contains",
+      "object": "Status Bar",
+      "description": "The phone icon is part of the status bar strip",
+      "documents": [
+        "4717"
+      ]
+    },
+    {
+      "subject": "Camera Icon",
+      "relationship": "contains",
+      "object": "Status Bar",
+      "description": "The camera icon is part of the status bar strip",
+      "documents": [
+        "4717"
+      ]
+    },
+    {
+      "subject": "Screen",
+      "relationship": "is",
+      "object": "Interface",
+      "description": "The screen is a user interface element for selecting a city in a mobile application",
+      "documents": [
+        "1303"
+      ]
+    },
+    {
+      "subject": "Header",
+      "relationship": "includes",
+      "object": "App Bar",
+      "description": "The header includes a back arrow icon and the title 'Select City' in the app bar",
+      "documents": [
+        "1303"
+      ]
+    },
+    {
+      "subject": "List Rows",
+      "relationship": "contains",
+      "object": "City Names",
+      "description": "The list rows contain city names displayed as list items for selecting a city",
+      "documents": [
+        "1303"
+      ]
+    },
+    {
+      "subject": "Footer",
+      "relationship": "contains",
+      "object": "Bottom Navigation",
+      "description": "The footer contains a bottom navigation bar with back, home, and menu icons for navigation",
+      "documents": [
+        "1303"
+      ]
+    },
+    {
+      "subject": "Facebook",
+      "relationship": "contains",
+      "object": "Icon",
+      "description": "The status bar includes a Facebook icon as one of the left-side notifications",
+      "documents": [
+        "1303"
+      ]
+    },
+    {
+      "subject": "Download Icon",
+      "relationship": "contains",
+      "object": "Icon",
+      "description": "The status bar includes a download icon as one of the left-side notifications",
+      "documents": [
+        "1303"
+      ]
+    },
+    {
+      "subject": "Screen",
+      "relationship": "is",
+      "object": "Login Screen",
+      "description": "The screen is a user authentication interface for the ZALORA mobile application",
+      "documents": [
+        "2867"
+      ]
+    },
+    {
+      "subject": "Status Bar",
+      "relationship": "is part of",
+      "object": "Screen",
+      "description": "The status bar is a part of the screen's display area.",
+      "documents": [
+        "2867"
+      ]
+    },
+    {
+      "subject": "Login With Facebook Button",
+      "relationship": "is",
+      "object": "Login Button",
+      "description": "The 'Login with Facebook' button is the primary login action for the screen",
+      "documents": [
+        "2867"
+      ]
+    },
+    {
+      "subject": "Email Address Input Field",
+      "relationship": "is",
+      "object": "Password Input Field",
+      "description": "The email address input field is used to enter the user's email address, which is then used in conjunction with the password input field for authentication",
+      "documents": [
+        "2867"
+      ]
+    },
+    {
+      "subject": "Checkbox",
+      "relationship": "is",
+      "object": "Skip Text",
+      "description": "The checkbox is used to indicate that the user can skip the login process by checking the box",
+      "documents": [
+        "2867"
+      ]
+    },
+    {
+      "subject": "Bottom Navigation Bar",
+      "relationship": "contains",
+      "object": "Login Button",
+      "description": "The bottom navigation bar contains the primary login action, which is the 'LOGIN' button",
+      "documents": [
+        "2867"
+      ]
+    },
+    {
+      "subject": "Facebook Logo",
+      "relationship": "contains",
+      "object": "Status Bar",
+      "description": "The Facebook logo is contained within the status bar.",
+      "documents": [
+        "2867"
+      ]
+    },
+    {
+      "subject": "People",
+      "relationship": "is part of",
+      "object": "Screen",
+      "description": "The 'People' screen is a component of a mobile application designed for managing contacts or identifying individuals in a community context",
+      "documents": [
+        "1460"
+      ]
+    },
+    {
+      "subject": "Add Person",
+      "relationship": "is part of",
+      "object": "Button",
+      "description": "The 'Add person' button is a UI element on the 'People' screen, designed to allow users to add new contacts",
+      "documents": [
+        "1460"
+      ]
+    },
+    {
+      "subject": "Finish",
+      "relationship": "is part of",
+      "object": "Button",
+      "description": "The 'FINISH' button is a UI element on the 'People' screen, designed to finalize the current action",
+      "documents": [
+        "1460"
+      ]
+    },
+    {
+      "subject": "Cancel",
+      "relationship": "is part of",
+      "object": "Button",
+      "description": "The 'Cancel' button is a UI element on the 'People' screen, designed to exit the current action",
+      "documents": [
+        "1460"
+      ]
+    },
+    {
+      "subject": "Status Bar",
+      "relationship": "is",
+      "object": "Top Part Of The Screen",
+      "description": "The status bar is the thin strip at the very top of the screen",
+      "documents": [
+        "1460"
       ]
     }
   ]

@@ -23,16 +23,34 @@ out/
 # Storage (generated data)
 storage/chroma/*
 !storage/chroma/.gitkeep
+storage/chroma_graph/
 storage/pageindex/*
 !storage/pageindex/.gitkeep
 storage/graph_data/*
 !storage/graph_data/.gitkeep
+storage/extractions/
+storage/ingestion_state.json
+storage/performance_options.json
+storage/knowledge_base/
 storage/docstore.json
 storage/rag_system.db
 
-# Uploaded data
+# Uploaded data (includes images/media)
 data/*
 !data/.gitkeep
+
+# Images and media (don't commit pictures, screenshots, etc.)
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.ico
+*.pdf
+*.mp4
+*.webm
+*.mp3
+*.wav
 
 # OS
 .DS_Store

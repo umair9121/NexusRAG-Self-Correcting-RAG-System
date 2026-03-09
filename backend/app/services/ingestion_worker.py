@@ -36,7 +36,6 @@ from app.modules.vlm_extract import (
     extract_text_with_vlm_image,
     extract_screen_object_model,
     run_ui_compliance_audit,
-    run_text_only_compliance_audit,
     get_per_page_visual_summaries,
     inject_vlm_summaries_into_ocr_markdown,
     unload_vlm_from_vram,
@@ -434,18 +433,15 @@ class IngestionWorker:
                             module="ingestion", document_id=doc_id, level="WARNING",
                         )
 
-                    # Free VRAM: unload VLM before switching to embedding model for WCAG retrieval
+                    # Free VRAM: unload VLM before switching to embedding/LLM for WCAG audit
                     await asyncio.get_event_loop().run_in_executor(None, unload_vlm_from_vram)
 
-                    # Step 3: WCAG-grounded compliance audit using the UI description
-                    # and retrieved WCAG criteria from the RAG pipeline.
-                    # Prefer the VLM-based audit when it works; if it returns an empty
-                    # result (common with very small VLMs), fall back to a text-only
-                    # audit that uses the UI description + WCAG knowledge base with
-                    # the main LLM model.
+                    # Step 3: WCAG compliance audit using the UI description + WCAG
+                    # knowledge base.  This is a text-only task handled by the main LLM
+                    # (not the VLM) — the VLM already did its job producing the description.
                     try:
                         broadcaster.log(
-                            "Step 3/4: Running WCAG compliance audit (retrieving WCAG criteria + VLM audit)…",
+                            "Step 3/4: Running WCAG compliance audit (retrieving WCAG criteria + LLM reasoning)…",
                             module="ingestion", document_id=doc_id,
                         )
                         audit_result = await asyncio.get_event_loop().run_in_executor(
@@ -472,39 +468,10 @@ class IngestionWorker:
                                 module="ingestion", document_id=doc_id,
                             )
                         else:
-                            # VLM audit returned empty / unparseable result; fall back to
-                            # a text-only audit that uses the UI description and WCAG KB.
                             broadcaster.log(
-                                "WCAG audit returned empty result from VLM — running text-only WCAG audit with main LLM…",
+                                "WCAG audit returned empty result (see logs for details).",
                                 module="ingestion", document_id=doc_id, level="WARNING",
                             )
-                            text_audit = await asyncio.get_event_loop().run_in_executor(
-                                None,
-                                lambda: run_text_only_compliance_audit(
-                                    ui_description or "",
-                                    som_json if som_json else None,
-                                    callback=cb,
-                                ),
-                            )
-                            if text_audit and (
-                                text_audit.get("detected_violations") is not None
-                                or text_audit.get("audit_metadata")
-                            ):
-                                await db.refresh(doc)
-                                doc.audit_result = json.dumps(text_audit, ensure_ascii=False)
-                                doc.ingestion_type = "screenshot"
-                                await db.commit()
-                                n_violations = len(text_audit.get("detected_violations", []))
-                                status = text_audit.get("audit_metadata", {}).get("overall_compliance_status", "Unknown")
-                                broadcaster.log(
-                                    f"Text-only WCAG audit saved: {status}, {n_violations} violation(s)",
-                                    module="ingestion", document_id=doc_id,
-                                )
-                            else:
-                                broadcaster.log(
-                                    "WCAG audit returned empty result even in text-only mode (see logs for details).",
-                                    module="ingestion", document_id=doc_id, level="WARNING",
-                                )
                     except Exception as audit_exc:
                         broadcaster.log(
                             f"WCAG compliance audit failed: {audit_exc}",

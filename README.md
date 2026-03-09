@@ -39,44 +39,90 @@ Frontend (Next.js :3000)            Backend (FastAPI :8001)
 ## Prerequisites
 
 - **Python 3.11+**
-- **Node.js 18+**
-- **Ollama** running locally (`ollama serve`)
-- **LLM and embedding models** pulled (match `backend/.env` / `LLM_MODEL`, `EMBEDDING_MODEL`):
-  ```bash
-  ollama pull qwen3:30b
-  ollama pull aksh-desai/qwen3-vl-embedding:8b-q4_k_m
-  ```
+- **Node.js 18+** (LTS recommended)
+- **Ollama** — [install Ollama](https://ollama.com) and have it running (`ollama serve`)
 
-## Quick Start
+## Installation (first-time setup)
 
-### Backend
+Follow these steps once to get the app running on your machine.
 
-**Important:** The backend must be run so that the `app` package is `backend/app`. Either:
+### 1. Clone the repository
 
-**Option A – from project root (recommended):**
 ```bash
+git clone https://github.com/YOUR_USER/Custom_RAG_System.git
 cd Custom_RAG_System
+```
+
+### 2. Install and run Ollama, pull models
+
+Start Ollama (if not already running):
+
+```bash
+ollama serve
+```
+
+Pull the models the app will use. The exact names must match what you put in `backend/.env` (see step 4). Example with smaller models for less VRAM:
+
+```bash
+ollama pull qwen3:1.7b
+ollama pull qwen3-embedding:0.6b
+ollama pull qwen2.5vl:3b
+```
+
+For heavier models (better quality, more VRAM):
+
+```bash
+ollama pull qwen3:30b
+ollama pull aksh-desai/qwen3-vl-embedding:8b-q4_k_m
+ollama pull qwen3-vl:8b
+```
+
+### 3. Backend: Python env and dependencies
+
+From the **project root** (`Custom_RAG_System`):
+
+**Windows (PowerShell or CMD):**
+```bash
 python -m venv venv
-venv\Scripts\activate        # Windows
-# source venv/bin/activate   # Linux/Mac
+venv\Scripts\activate
 pip install -r backend/requirements.txt
+```
+
+**Linux / macOS:**
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r backend/requirements.txt
+```
+
+### 4. Backend: environment configuration
+
+Copy the example env file and set model names to match what you pulled in step 2:
+
+- **Windows:** `copy backend\.env.example backend\.env`
+- **Linux/macOS:** `cp backend/.env.example backend/.env`
+
+Edit `backend/.env` and set at least:
+
+- `LLM_MODEL` — main reasoning/generation model (e.g. `qwen3:1.7b` or `qwen3:30b`)
+- `EMBEDDING_MODEL` — for vector search (e.g. `qwen3-embedding:0.6b`)
+- `VLM_MODEL` — vision model for UI/screenshots (e.g. `qwen2.5vl:3b`)
+
+Optional: set `FAST_RESPONSE_MODEL`, `OLLAMA_BASE_URL` (if Ollama is on another host), and other options as in the comments in `.env`.
+
+### 5. Start the backend
+
+From the project root, with the same terminal where you activated the venv:
+
+```bash
 python backend/run.py
 ```
 
-**Option B – from backend directory:**
-```bash
-cd Custom_RAG_System/backend
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8001
-```
+You should see Rich-formatted logs and no import errors. In a browser, open **http://localhost:8001/api** — you should get JSON listing API endpoints (e.g. `GET /api/documents`, `GET /api/chat/sessions`). If you get 404, the backend did not start correctly or another process is using port 8001.
 
-Then open **http://localhost:8001/api** in a browser. You should see JSON listing endpoints (e.g. `GET /api/documents`, `GET /api/chat/sessions`). If you get 404 there, the wrong app is on port 8001 or the backend did not load correctly.
+### 6. Frontend: install and run
 
-The backend terminal will show Rich-formatted logs for every ingestion step, LLM call, and routing decision.
-
-### Frontend
+In a **new terminal**, from the project root:
 
 ```bash
 cd frontend
@@ -84,7 +130,37 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000 in your browser.
+Then open **http://localhost:3000** in your browser. The UI talks to the backend at `http://localhost:8001` by default; no extra config is needed for a local install.
+
+### 7. Verify
+
+- **Backend API:** http://localhost:8001/api  
+- **Backend docs:** http://localhost:8001/docs  
+- **Frontend:** http://localhost:3000  
+
+Upload a PDF from the dashboard, start an ingestion job, then try a query in the Chat tab.
+
+---
+
+## Quick Start (after installation)
+
+Once the project is installed, you only need to start backend and frontend.
+
+**Terminal 1 — backend (from project root, venv activated):**
+```bash
+cd Custom_RAG_System
+venv\Scripts\activate          # Windows
+# source venv/bin/activate     # Linux/Mac
+python backend/run.py
+```
+
+**Terminal 2 — frontend:**
+```bash
+cd Custom_RAG_System/frontend
+npm run dev
+```
+
+Then open http://localhost:3000. Ensure Ollama is running (`ollama serve`) and that the models in `backend/.env` are pulled.
 
 ## Deploy backend on another machine (e.g. Linux server)
 
@@ -192,11 +268,15 @@ Custom_RAG_System/
 │   │       ├── websocket.ts     # WebSocket hook for logs
 │   │       └── types.ts         # TypeScript interfaces
 │   └── package.json
-├── data/                        # Uploaded PDFs
-└── storage/
-    ├── chroma/                  # ChromaDB vector store
-    ├── pageindex/               # JSON tree files
-    └── graph_data/              # NetworkX graph files
+├── data/                        # Uploaded PDFs (gitignored)
+├── storage/                     # Generated at runtime (gitignored)
+│   ├── chroma/                  # ChromaDB vector store
+│   ├── chroma_graph/            # Graph RAG embeddings
+│   ├── pageindex/               # JSON tree files
+│   ├── graph_data/              # NetworkX graph files
+│   ├── extractions/             # VLM/OCR extraction cache
+│   └── knowledge_base/          # Taxonomy, relations
+└── wcag_data.json              # Optional WCAG reference data
 ```
 
 ## Key Features
@@ -286,6 +366,17 @@ Override via environment variables or `backend/.env` (`.env` overrides shell whe
 set OLLAMA_BASE_URL=http://127.0.0.1:11434
 set LLM_MODEL=qwen3:30b
 ```
+
+## Troubleshooting
+
+| Issue | What to check |
+|-------|----------------|
+| Backend 404 on `/api` | Ensure you run `python backend/run.py` from the **project root** so the `app` package resolves as `backend.app`. |
+| "Connection refused" to Ollama | Start Ollama: `ollama serve`. If Ollama is on another machine, set `OLLAMA_BASE_URL` in `backend/.env`. |
+| Model not found / empty responses | Run `ollama list` and set `LLM_MODEL`, `EMBEDDING_MODEL`, `VLM_MODEL` in `backend/.env` to **exact** names from that list. Restart the backend after editing `.env`. |
+| Context truncation errors | On the machine running `ollama serve`, set a larger context, e.g. `OLLAMA_CONTEXT_LENGTH=16384 ollama serve`. |
+| Frontend can't reach backend | For local install, no `.env.local` is needed (frontend defaults to `http://localhost:8001`). If backend is on another host, create `frontend/.env.local` with `NEXT_PUBLIC_API_URL=http://BACKEND_IP:8001`. |
+| Port 8001 or 3000 in use | Stop the other process or change the port (backend: `run.py` or `uvicorn --port`; frontend: `npm run dev -- -p 3001`). |
 
 ## License
 
